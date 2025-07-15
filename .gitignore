@@ -1,0 +1,34 @@
+# 🔐 Secrets
+.env
+
+# 🐍 Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# 🧪 Tests and cache
+*.log
+*.sqlite3
+
+# 📦 Virtual environments
+venv/
+env/
+.venv/
+
+# 🧹 VS Code & IDEs
+.vscode/
+.idea/
+
+# 🔄 Byte-compiled and temp files
+*.bak
+*.swp
+*.tmp
+
+# 📝 Jupyter
+.ipynb_checkpoints/
+
+# 📦 Python packaging
+build/
+dist/
+*.egg-info/
