@@ -1,48 +1,47 @@
 import os
 import requests
-from dotenv import load_dotenv
 
-load_dotenv()
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-def ask_gpt(prompt, context=""):
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        return "❌ Missing OpenRouter API key."
+ALLOWED_MODELS = {
+    "gpt-3.5-turbo",
+    "gpt-4",
+    "mistral-7b-instruct",
+    "openchat",
+    "nous-hermes",
+    "llama3",
+}
+
+DEFAULT_MODEL = "gpt-3.5-turbo"
+
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+def ask_gpt(prompt: str, model: str = DEFAULT_MODEL, context: str = "") -> str:
+    if model not in ALLOWED_MODELS:
+        raise ValueError(f"Model {model} is not supported.")
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    messages = [
+        {"role": "system", "content": context or "You are TonGPT, an expert in the TON ecosystem."},
+        {"role": "user", "content": prompt}
+    ]
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 1000
+    }
 
     try:
-        full_prompt = context + "\n\n" + prompt if context else prompt
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-
-        data = {
-            "model": "openai/gpt-3.5-turbo",  # or try "mistralai/mixtral-8x7b", "meta-llama/llama-3-70b-instruct"
-            "messages": [
-                {"role": "system", "content": (
-                    "You are TON AlphaBot, a Telegram-based assistant for TON memecoins, STON.fi, whales, and alpha. "
-                    "Be concise, crypto-native, and sharp in your responses. Use emojis when fitting. "
-                    "When unsure, reply with 'Still digging 🕵️—come back in a few blocks.'"
-                )},
-                {"role": "user", "content": full_prompt}
-            ]
-        }
-
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=data,
-            timeout=15
-        )
-
-        if response.status_code != 200:
-            print("OpenRouter error:", response.status_code, response.text)
-            return "❌ GPT request failed (OpenRouter)"
-
-        reply = response.json()["choices"][0]["message"]["content"]
-        return reply.strip()
-
+        response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload)
+        response.raise_for_status()
+        result = response.json()
+        return result["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        print("GPT Error:", e)
-        return "❌ GPT request failed. Try again later."
+        print("Error in ask_gpt:", e)
+        return "⚠️ GPT error. Please try again later."

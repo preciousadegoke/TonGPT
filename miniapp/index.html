@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TonGPT Mini App</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://unpkg.com/@tonconnect/sdk@0.0.17/dist/tonconnect-sdk.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .telegram-bg {
+            background-color: var(--tg-theme-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #000000);
+        }
+        .telegram-secondary-bg {
+            background-color: var(--tg-theme-secondary-bg-color, #f0f0f0);
+        }
+        .telegram-button {
+            background-color: var(--tg-theme-button-color, #2481cc);
+            color: var(--tg-theme-button-text-color, #ffffff);
+        }
+        .telegram-accent {
+            color: var(--tg-theme-accent-text-color, #2481cc);
+        }
+        .telegram-hint {
+            color: var(--tg-theme-hint-color, #707579);
+        }
+        .coin-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        }
+        .blink {
+            animation: blink-animation 1s steps(5, start) infinite;
+        }
+        @keyframes blink-animation {
+            to { opacity: 0.5; }
+        }
+        .ton-gradient {
+            background: linear-gradient(135deg, #0088cc 0%, #00a8dc 100%);
+        }
+        .chart-container {
+            height: 250px;
+        }
+        .wallet-address {
+            font-family: monospace;
+        }
+        .nav-item.active {
+            border-bottom: 2px solid var(--tg-theme-button-color, #2481cc);
+        }
+        .dropdown-menu {
+            display: none;
+            position: absolute;
+            right: 0;
+            z-index: 10;
+        }
+        .dropdown:hover .dropdown-menu {
+            display: block;
+        }
+    </style>
+</head>
+<body class="telegram-bg min-h-screen flex flex-col">
+    <!-- Main App Container -->
+    <div class="flex flex-col h-screen max-h-screen overflow-hidden">
+    <!-- Header -->
+<header class="flex items-center justify-between p-4 border-b telegram-secondary-bg">
+    <div class="flex items-center">
+        <!-- Your logo -->
+        <img src="https://i.imgur.com/7O7C3ie.png" alt="TonGPT Logo" class="w-10 h-10 mr-3">
+        <h1 class="text-xl font-bold">TonGPT</h1>
+    </div>
+    <div class="flex items-center space-x-3">
+        <button onclick="tg.switchInlineQuery('')" class="w-8 h-8 rounded-full telegram-secondary-bg flex items-center justify-center">
+            <i class="fas fa-search telegram-hint"></i>
+        </button>
+        <div class="dropdown relative">
+            <button class="w-8 h-8 rounded-full telegram-secondary-bg flex items-center justify-center">
+                <i class="fas fa-ellipsis-v telegram-hint"></i>
+            </button>
+            <div class="dropdown-menu mt-2 w-48 rounded-md shadow-lg telegram-secondary-bg py-1">
+                <a href="#" class="block px-4 py-2 text-sm hover:bg-opacity-10 hover:bg-black">Settings</a>
+                <a href="#" class="block px-4 py-2 text-sm hover:bg-opacity-10 hover:bg-black">Help</a>
+                <a href="#" onclick="tg.close()" class="block px-4 py-2 text-sm hover:bg-opacity-10 hover:bg-black">Close</a>
+            </div>
+        </div>
+    </div>
+</header>
+        <!-- Main Content -->
+        <main id="main-content" class="flex-1 overflow-y-auto">
+            <!-- Content will be rendered here by JavaScript -->
+        </main>
+
+        <!-- Bottom Navigation -->
+        <nav class="flex justify-around items-center p-2 border-t telegram-secondary-bg">
+            <button data-view="dashboard" onclick="navigateTo('dashboard')" class="nav-item flex flex-col items-center p-2">
+                <i class="fas fa-home mb-1"></i>
+                <span class="text-xs">Home</span>
+            </button>
+            <button data-view="scan" onclick="navigateTo('scan')" class="nav-item flex flex-col items-center p-2">
+                <i class="fas fa-chart-line mb-1"></i>
+                <span class="text-xs">Scan</span>
+            </button>
+            <button data-view="whale" onclick="navigateTo('whale')" class="nav-item flex flex-col items-center p-2">
+                <i class="fas fa-whale mb-1"></i>
+                <span class="text-xs">Whale</span>
+            </button>
+            <button data-view="alerts" onclick="navigateTo('alerts')" class="nav-item flex flex-col items-center p-2">
+                <i class="fas fa-bell mb-1"></i>
+                <span class="text-xs">Alerts</span>
+            </button>
+            <button data-view="referral" onclick="navigateTo('referral')" class="nav-item flex flex-col items-center p-2">
+                <i class="fas fa-ellipsis-h mb-1"></i>
+                <span class="text-xs">Refer</span>
+            </button>
+        </nav>
+    </div>
+
+    <!-- JavaScript -->
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+
+        // Set theme based on Telegram
+        document.documentElement.className = tg.colorScheme;
+        tg.onEvent('themeChanged', () => {
+            document.documentElement.className = tg.colorScheme;
+        });
+
+        // TON Connect SDK
+        const tonConnect = new window.TonConnect.TonConnect({
+            manifestUrl: 'https://<your-domain>/tonconnect-manifest.json' // Replace with your hosted manifest URL
+        });
+
+        // Get user data
+        const user = tg.initDataUnsafe.user || {};
+        const userId = user.id || 'guest';
+
+        // App state
+        let appState = {
+            currentView: 'dashboard',
+            walletConnected: false,
+            walletAddress: '',
+            followedWallets: [],
+            alerts: [],
+            darkMode: tg.colorScheme === 'dark',
+            referralCode: `REF${userId}`,
+            referralLink: `https://t.me/TonGptt_bot?start=REF${userId}`
+        };
+
+        async function connectWallet() {
+            try {
+                await tonConnect.connect();
+                const wallet = await tonConnect.getWallet();
+                if (wallet) {
+                    appState.walletConnected = true;
+                    appState.walletAddress = wallet.account.address;
+                    await fetch('/api/wallet/connect', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId, address: appState.walletAddress })
+                    });
+                    render();
+                }
+            } catch (e) {
+                tg.showAlert(`Wallet connection failed: ${e.message}`);
+            }
+        }
+
+        async function disconnectWallet() {
+            await tonConnect.disconnect();
+            appState.walletConnected = false;
+            appState.walletAddress = '';
+            await fetch('/api/wallet/disconnect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId })
+            });
+            render();
+        }
+
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text);
+            tg.showAlert('Copied to clipboard!');
+        }
+
+        async function getTrendingCoins() {
+            try {
+                const response = await fetch('/api/scan');
+                return await response.json();
+            } catch (e) {
+                tg.showAlert('Failed to fetch trending coins.');
+                return [];
+            }
+        }
+
+        async function getWhaleTransactions() {
+            try {
+                const response = await fetch('/api/whale');
+                return await response.json();
+            } catch (e) {
+                tg.showAlert('Failed to fetch whale transactions.');
+                return [];
+            }
+        }
+
+        async function getStonPools() {
+            try {
+                const response = await fetch('/api/ston');
+                return await response.json();
+            } catch (e) {
+                tg.showAlert('Failed to fetch STON.fi pools.');
+                return [];
+            }
+        }
+
+        async function getUserAlerts() {
+            try {
+                const response = await fetch(`/api/alerts/${userId}`);
+                return await response.json();
+            } catch (e) {
+                tg.showAlert('Failed to fetch alerts.');
+                return [];
+            }
+        }
+
+        async function getFollowedWallets() {
+            try {
+                const response = await fetch(`/api/follow/${userId}`);
+                return await response.json();
+            } catch (e) {
+                tg.showAlert('Failed to fetch followed wallets.');
+                return [];
+            }
+        }
+
+        async function getUserStats() {
+            try {
+                const response = await fetch(`/api/stats/${userId}`);
+                return await response.json();
+            } catch (e) {
+                tg.showAlert('Failed to fetch user stats.');
+                return { referrals: 0, earned: '0 TON', activeAlerts: 0, followedWallets: 0 };
+            }
+        }
+
+        function navigateTo(view) {
+            appState.currentView = view;
+            render();
+        }
+
+        async function render() {
+            const mainContent = document.getElementById('main-content');
+            switch (appState.currentView) {
+                case 'scan':
+                    mainContent.innerHTML = await renderScanView();
+                    break;
+                case 'whale':
+                    mainContent.innerHTML = await renderWhaleView();
+                    break;
+                case 'ston':
+                    mainContent.innerHTML = await renderStonView();
+                    break;
+                case 'alerts':
+                    mainContent.innerHTML = await renderAlertsView();
+                    break;
+                case 'follow':
+                    mainContent.innerHTML = await renderFollowView();
+                    break;
+                case 'pay':
+                    mainContent.innerHTML = renderPayView();
+                    break;
+                case 'referral':
+                    mainContent.innerHTML = await renderReferralView();
+                    break;
+                case 'dashboard':
+                default:
+                    mainContent.innerHTML = await renderDashboardView();
+            }
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.classList.toggle('active', item.dataset.view === appState.currentView);
+            });
+        }
+
+        async function renderDashboardView() {
+            const stats = await getUserStats();
+            return `
+                <div class="p-4">
+                    <div class="flex items-center justify-between mb-6">
+                        <h1 class="text-2xl font-bold">Dashboard</h1>
+                        <div class="flex items-center space-x-2">
+                            ${appState.walletConnected ? `
+                                <span class="wallet-address text-sm telegram-hint">${appState.walletAddress.substring(0, 6)}...${appState.walletAddress.substring(appState.walletAddress.length - 4)}</span>
+                                <button onclick="disconnectWallet()" class="px-3 py-1 rounded-full text-xs telegram-secondary-bg">Disconnect</button>
+                            ` : `
+                                <button onclick="connectWallet()" class="px-3 py-1 rounded-full text-xs telegram-button">Connect Wallet</button>
+                            `}
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4 mb-6">
+                        <div class="telegram-secondary-bg p-4 rounded-xl">
+                            <p class="text-sm telegram-hint">Referrals</p>
+                            <p class="text-2xl font-bold">${stats.referrals}</p>
+                        </div>
+                        <div class="telegram-secondary-bg p-4 rounded-xl">
+                            <p class="text-sm telegram-hint">Earned</p>
+                            <p class="text-2xl font-bold">${stats.earned}</p>
+                        </div>
+                        <div class="telegram-secondary-bg p-4 rounded-xl">
+                            <p class="text-sm telegram-hint">Alerts</p>
+                            <p class="text-2xl font-bold">${stats.activeAlerts}</p>
+                        </div>
+                        <div class="telegram-secondary-bg p-4 rounded-xl">
+                            <p class="text-sm telegram-hint">Wallets</p>
+                            <p class="text-2xl font-bold">${stats.followedWallets}</p>
+                        </div>
+                    </div>
+                    <div class="mb-6">
+                        <h2 class="text-lg font-semibold mb-3">Quick Actions</h2>
+                        <div class="grid grid-cols-3 gap-3">
+                            <button onclick="navigateTo('scan')" class="telegram-secondary-bg p-3 rounded-lg flex flex-col items-center">
+                                <i class="fas fa-chart-line text-lg mb-1 telegram-accent"></i>
+                                <span class="text-xs">Scan</span>
+                            </button>
+                            <button onclick="navigateTo('whale')" class="telegram-secondary-bg p-3 rounded-lg flex flex-col items-center">
+                                <i class="fas fa-whale text-lg mb-1 telegram-accent"></i>
+                                <span class="text-xs">Whale</span>
+                            </button>
+                            <button onclick="navigateTo('alerts')" class="telegram-secondary-bg p-3 rounded-lg flex flex-col items-center">
+                                <i class="fas fa-bell text-lg mb-1 telegram-accent"></i>
+                                <span class="text-xs">Alerts</span>
+                            </button>
+                            <button onclick="navigateTo('ston')" class="telegram-secondary-bg p-3 rounded-lg flex flex-col items-center">
+                                <i class="fas fa-water text-lg mb-1 telegram-accent"></i>
+                                <span class="text-xs">STON</span>
+                            </button>
+                            <button onclick="navigateTo('follow')" class="telegram-secondary-bg p-3 rounded-lg flex flex-col items-center">
+                                <i class="fas fa-eye text-lg mb-1 telegram-accent"></i>
+                                <span class="text-xs">Follow</span>
+                            </button>
+                            <button onclick="navigateTo('pay')" class="telegram-secondary-bg p-3 rounded-lg flex flex-col items-center">
+                                <i class="fas fa-gem text-lg mb-1 telegram-accent"></i>
+                                <span class="text-xs">Pay</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <h2 class="text-lg font-semibold mb-3">Recent Activity</h2>
+                        <div class="space-y-3">
+                            <div class="telegram-secondary-bg p-3 rounded-lg">
+                                <div class="flex justify-between items-center">
+                                    <div>
+                                        <p class="font-medium">Whale buy detected</p>
+                                        <p class="text-xs telegram-hint">MEOW • 2 min ago</p>
+                                    </div>
+                                    <span class="text-green-500 text-sm">+125K TON</span>
+                                </div>
+                            </div>
+                            <div class="telegram-secondary-bg p-3 rounded-lg">
+                                <div class="flex justify-between items-center">
+                                    <div>
+                                        <p class="font-medium">Price alert triggered</p>
+                                        <p class="text-xs telegram-hint">TON < $2.10 • 15 min ago</p>
+                                    </div>
+                                    <span class="text-red-500 text-sm">$2.08</span>
+                                </div>
+                            </div>
+                            <div class="telegram-secondary-bg p-3 rounded-lg">
+                                <div class="flex justify-between items-center">
+                                    <div>
+                                        <p class="font-medium">New referral</p>
+                                        <p class="text-xs telegram-hint">@cryptofan • 1h ago</p>
+                                    </div>
+                                    <span class="text-yellow-500 text-sm">+3 TON</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function renderScanView() {
+            const coins = await getTrendingCoins();
+            return `
+                <div class="p-4">
+                    <div class="flex items-center justify-between mb-6">
+                        <h1 class="text-2xl font-bold">Token Scanner</h1>
+                        <div class="flex items-center space-x-2">
+                            <button class="px-3 py-1 rounded-full text-xs telegram-secondary-bg">New</button>
+                            <button class="px-3 py-1 rounded-full text-xs telegram-secondary-bg">Trending</button>
+                        </div>
+                    </div>
+                    <div class="mb-4">
+                        <div class="relative">
+                            <input type="text" placeholder="Search tokens..." class="w-full telegram-secondary-bg rounded-full py-2 px-4 pl-10 focus:outline-none">
+                            <i class="fas fa-search absolute left-3 top-3 telegram-hint"></i>
+                        </div>
+                    </div>
+                    <div class="space-y-3">
+                        ${coins.map(coin => `
+                            <div class="coin-card telegram-secondary-bg p-4 rounded-xl transition-all duration-200 cursor-pointer">
+                                <div class="flex justify-between items-start mb-2">
+                                    <div>
+                                        <p class="font-bold">${coin.name} <span class="text-sm telegram-hint">${coin.symbol}</span></p>
+                                        <p class="text-sm">${coin.price} <span class="${coin.change.startsWith('+') ? 'text-green-500' : 'text-red-500'}">${coin.change}</span></p>
+                                    </div>
+                                    <button class="text-xs telegram-button px-3 py-1 rounded-full">Trade</button>
+                                </div>
+                                <div class="grid grid-cols-4 gap-2 text-xs">
+                                    <div>
+                                        <p class="telegram-hint">LP</p>
+                                        <p>$${coin.lp}</p>
+                                    </div>
+                                    <div>
+                                        <p class="telegram-hint">Holders</p>
+                                        <p>${coin.holders}</p>
+                                    </div>
+                                    <div>
+                                        <p class="telegram-hint">Age</p>
+                                        <p>${coin.age}</p>
+                                    </div>
+                                    <div>
+                                        <p class="telegram-hint">Volume</p>
+                                        <p>$${coin.volume}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <div class="mt-6 p-4 telegram-secondary-bg rounded-xl">
+                        <h3 class="font-semibold mb-2">AI Insights</h3>
+                        <p class="text-sm mb-3">${coins[0]?.name || 'No data'} (${coins[0]?.symbol || ''}) shows strong momentum with a ${coins[0]?.change || '0%'} increase in price. The liquidity pool of ${coins[0]?.lp || 'N/A'} suggests healthy trading conditions. Consider setting a price alert if this trend continues.</p>
+                        <button class="text-xs telegram-button px-3 py-1 rounded-full">Ask AI</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function renderWhaleView() {
+            const transactions = await getWhaleTransactions();
+            return `
+                <div class="p-4">
+                    <div class="flex items-center justify-between mb-6">
+                        <h1 class="text-2xl font-bold">Whale Tracker</h1>
+                        <div class="flex items-center space-x-2">
+                            <button class="px-3 py-1 rounded-full text-xs telegram-secondary-bg">Live</button>
+                        </div>
+                    </div>
+                    <div class="mb-6">
+                        <div class="chart-container telegram-secondary-bg rounded-xl p-2">
+                            <div class="flex justify-center items-center h-full">
+                                <p class="telegram-hint">Whale Activity Chart (Placeholder)</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-4">
+                        <h2 class="text-lg font-semibold mb-3">Recent Whale Transactions</h2>
+                        <div class="space-y-3">
+                            ${transactions.map(tx => `
+                                <div class="telegram-secondary-bg p-3 rounded-lg">
+                                    <div class="flex justify-between items-center">
+                                        <div>
+                                            <p class="font-medium">${tx.wallet.substring(0, 6)}...${tx.wallet.substring(tx.wallet.length - 4)}</p>
+                                            <p class="text-xs telegram-hint">${tx.token} • ${tx.time}</p>
+                                        </div>
+                                        <span class="${tx.direction === 'buy' ? 'text-green-500' : 'text-red-500'} font-medium">${tx.amount} TON</span>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                    <div class="mt-6 p-4 telegram-secondary-bg rounded-xl">
+                        <h3 class="font-semibold mb-2">AI Insights</h3>
+                        <p class="text-sm mb-3">Whale activity has increased recently, with notable buys in ${transactions[0]?.token || 'N/A'}. This could indicate upcoming price movements.</p>
+                        <button class="text-xs telegram-button px-3 py-1 rounded-full">Analyze Pattern</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function renderStonView() {
+            const pools = await getStonPools();
+            return `
+                <div class="p-4">
+                    <div class="flex items-center justify-between mb-6">
+                        <h1 class="text-2xl font-bold">STON.fi Pools</h1>
+                        <div class="flex items-center space-x-2">
+                            <button class="px-3 py-1 rounded-full text-xs telegram-secondary-bg">High APR</button>
+                            <button class="px-3 py-1 rounded-full text-xs telegram-secondary-bg">High TVL</button>
+                        </div>
+                    </div>
+                    <div class="mb-6">
+                        <div class="chart-container telegram-secondary-bg rounded-xl p-2">
+                            <div class="flex justify-center items-center h-full">
+                                <p class="telegram-hint">TVL Growth Chart (Placeholder)</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-4">
+                        <h2 class="text-lg font-semibold mb-3">Top Pools</h2>
+                        <div class="space-y-3">
+                            ${pools.map(pool => `
+                                <div class="telegram-secondary-bg p-4 rounded-xl">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <p class="font-bold">${pool.pair}</p>
+                                        <span class="text-green-500 font-medium">${pool.apr}% APR</span>
+                                    </div>
+                                    <div class="grid grid-cols-3 gap-2 text-xs">
+                                        <div>
+                                            <p class="telegram-hint">TVL</p>
+                                            <p>$${pool.tvl}</p>
+                                        </div>
+                                        <div>
+                                            <p class="telegram-hint">Volume</p>
+                                            <p>$${pool.volume}</p>
+                                        </div>
+                                        <div>
+                                            <p class="telegram-hint">Fees</p>
+                                            <p>0.3%</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                    <div class="mt-6 p-4 telegram-secondary-bg rounded-xl">
+                        <h3 class="font-semibold mb-2">AI Insights</h3>
+                        <p class="text-sm mb-3">The ${pools[0]?.pair || 'N/A'} pool offers high returns at ${pools[0]?.apr || '0'}% APR. Monitor TVL growth for stability.</p>
+                        <button class="text-xs telegram-button px-3 py-1 rounded-full">Optimize Yield</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function renderAlertsView() {
+            const alerts = await getUserAlerts();
+            return `
+                <div class="p-4">
+                    <div class="flex items-center justify-between mb-6">
+                        <h1 class="text-2xl font-bold">Price Alerts</h1>
+                        <button class="px-3 py-1 rounded-full text-xs telegram-button" onclick="tg.showPopup({title: 'New Alert', message: 'Alert creation would go here'})">
+                            <i class="fas fa-plus mr-1"></i> New
+                        </button>
+                    </div>
+                    <div class="mb-6">
+                        <div class="telegram-secondary-bg rounded-xl p-4">
+                            <h2 class="font-semibold mb-3">Active Alerts</h2>
+                            <div class="space-y-3">
+                                ${alerts.filter(a => a.status === 'active').map(alert => `
+                                    <div class="flex justify-between items-center p-3 rounded-lg bg-opacity-20 bg-green-500">
+                                        <div>
+                                            <p class="font-medium">${alert.token}</p>
+                                            <p class="text-xs telegram-hint">${alert.condition}</p>
+                                        </div>
+                                        <span class="text-xs px-2 py-1 rounded-full telegram-secondary-bg">Active</span>
+                                    </div>
+                                `).join('')}
+                                ${alerts.filter(a => a.status !== 'active').length === 0 ? '' : `
+                                    <h2 class="font-semibold mb-3 mt-4">Other Alerts</h2>
+                                    ${alerts.filter(a => a.status !== 'active').map(alert => `
+                                        <div class="flex justify-between items-center p-3 rounded-lg telegram-secondary-bg">
+                                            <div>
+                                                <p class="font-medium">${alert.token}</p>
+                                                <p class="text-xs telegram-hint">${alert.condition}</p>
+                                            </div>
+                                            <span class="text-xs px-2 py-1 rounded-full ${alert.status === 'triggered' ? 'bg-red-500 bg-opacity-20 text-red-500' : 'telegram-hint'}">
+                                                ${alert.status === 'triggered' ? 'Triggered' : 'Pending'}
+                                            </span>
+                                        </div>
+                                    `).join('')}
+                                `}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-6 p-4 telegram-secondary-bg rounded-xl">
+                        <h3 class="font-semibold mb-2">AI Suggestions</h3>
+                        <p class="text-sm mb-3">Based on recent market activity, consider setting alerts for: DIAMOND > $0.005, MEOW 24h volume > $1M, and TON whale transactions > 100K.</p>
+                        <button class="text-xs telegram-button px-3 py-1 rounded-full">Smart Alerts</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function renderFollowView() {
+            const wallets = await getFollowedWallets();
+            return `
+                <div class="p-4">
+                    <div class="flex items-center justify-between mb-6">
+                        <h1 class="text-2xl font-bold">Wallet Tracker</h1>
+                        <button class="px-3 py-1 rounded-full text-xs telegram-button" onclick="tg.showPopup({title: 'Follow Wallet', message: 'Wallet address input would go here'})">
+                            <i class="fas fa-plus mr-1"></i> Add
+                        </button>
+                    </div>
+                    <div class="mb-6">
+                        <div class="telegram-secondary-bg rounded-xl p-4">
+                            <h2 class="font-semibold mb-3">Followed Wallets</h2>
+                            <div class="space-y-3">
+                                ${wallets.map(wallet => `
+                                    <div class="flex justify-between items-center p-3 rounded-lg telegram-secondary-bg">
+                                        <div>
+                                            <p class="font-medium">${wallet.label}</p>
+                                            <p class="text-xs telegram-hint wallet-address">${wallet.address.substring(0, 6)}...${wallet.address.substring(wallet.address.length - 4)}</p>
+                                        </div>
+                                        <div class="text-right">
+                                            <p class="text-xs">${wallet.lastTx}</p>
+                                            <p class="text-xs telegram-hint">${wallet.time}</p>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-6">
+                        <div class="telegram-secondary-bg rounded-xl p-4">
+                            <h2 class="font-semibold mb-3">Recent Transactions</h2>
+                            <div class="space-y-3">
+                                ${wallets.slice(0, 3).map(wallet => `
+                                    <div class="p-3 rounded-lg" style="background-color: rgba(36, 129, 204, 0.1)">
+                                        <div class="flex justify-between items-center mb-1">
+                                            <p class="font-medium">${wallet.label}</p>
+                                            <span class="text-xs px-2 py-1 rounded-full telegram-secondary-bg">New</span>
+                                        </div>
+                                        <p class="text-sm mb-1">${wallet.lastTx}</p>
+                                        <p class="text-xs telegram-hint">${wallet.time}</p>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-6 p-4 telegram-secondary-bg rounded-xl">
+                        <h3 class="font-semibold mb-2">AI Insights</h3>
+                        <p class="text-sm mb-3">The wallet labeled "${wallets[0]?.label || 'N/A'}" has made significant transactions recently. Consider mirroring their moves with smaller positions.</p>
+                        <button class="text-xs telegram-button px-3 py-1 rounded-full">Analyze Strategy</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderPayView() {
+            return `
+                <div class="p-4">
+                    <div class="flex items-center justify-between mb-6">
+                        <h1 class="text-2xl font-bold">Premium Plans</h1>
+                        <div class="flex items-center space-x-2">
+                            <button class="px-3 py-1 rounded-full text-xs telegram-secondary-bg">TON</button>
+                            <button class="px-3 py-1 rounded-full text-xs telegram-secondary-bg">Stars</button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 gap-4 mb-6">
+                        <div class="telegram-secondary-bg p-5 rounded-xl border-2 border-yellow-400">
+                            <div class="flex justify-between items-start mb-3">
+                                <div>
+                                    <h2 class="font-bold text-lg">Basic</h2>
+                                    <p class="text-sm telegram-hint">Essential features</p>
+                                </div>
+                                <div class="text-right">
+                                    <p class="font-bold">5 TON/month</p>
+                                    <p class="text-xs telegram-hint">~$10</p>
+                                </div>
+                            </div>
+                            <ul class="text-sm space-y-2 mb-4">
+                                <li class="flex items-center"><i class="fas fa-check-circle text-green-500 mr-2"></i> 10 price alerts</li>
+                                <li class="flex items-center"><i class="fas fa-check-circle text-green-500 mr-2"></i> 3 wallet follows</li>
+                                <li class="flex items-center"><i class="fas fa-check-circle text-green-500 mr-2"></i> Basic whale alerts</li>
+                                <li class="flex items-center"><i class="fas fa-times-circle text-red-500 mr-2"></i> No AI insights</li>
+                            </ul>
+                            <button class="w-full py-2 rounded-xl telegram-button font-medium">Subscribe</button>
+                        </div>
+                        <div class="telegram-secondary-bg p-5 rounded-xl border-2 border-purple-500">
+                            <div class="flex justify-between items-start mb-3">
+                                <div>
+                                    <h2 class="font-bold text-lg">Pro</h2>
+                                    <p class="text-sm telegram-hint">For serious traders</p>
+                                </div>
+                                <div class="text-right">
+                                    <p class="font-bold">15 TON/month</p>
+                                    <p class="text-xs telegram-hint">~$30</p>
+                                </div>
+                            </div>
+                            <ul class="text-sm space-y-2 mb-4">
+                                <li class="flex items-center"><i class="fas fa-check-circle text-green-500 mr-2"></i> Unlimited alerts</li>
+                                <li class="flex items-center"><i class="fas fa-check-circle text-green-500 mr-2"></i> 10 wallet follows</li>
+                                <li class="flex items-center"><i class="fas fa-check-circle text-green-500 mr-2"></i> Advanced whale alerts</li>
+                                <li class="flex items-center"><i class="fas fa-check-circle text-green-500 mr-2"></i> AI insights</li>
+                            </ul>
+                            <button class="w-full py-2 rounded-xl telegram-button font-medium">Subscribe</button>
+                        </div>
+                        <div class="telegram-secondary-bg p-5 rounded-xl">
+                            <div class="flex justify-between items-start mb-3">
+                                <div>
+                                    <h2 class="font-bold text-lg">Yearly Pro</h2>
+                                    <p class="text-sm telegram-hint">Best value</p>
+                                </div>
+                                <div class="text-right">
+                                    <p class="font-bold">120 TON/year</p>
+                                    <p class="text-xs telegram-hint">~$240 (2 months free)</p>
+                                </div>
+                            </div>
+                            <ul class="text-sm space-y-2 mb-4">
+                                <li class="flex items-center"><i class="fas fa-check-circle text-green-500 mr-2"></i> Everything in Pro</li>
+                                <li class="flex items-center"><i class="fas fa-check-circle text-green-500 mr-2"></i> Priority support</li>
+                                <li class="flex items-center"><i class="fas fa-check-circle text-green-500 mr-2"></i> Custom alerts</li>
+                                <li class="flex items-center"><i class="fas fa-check-circle text-green-500 mr-2"></i> Early access</li>
+                            </ul>
+                            <button class="w-full py-2 rounded-xl telegram-button font-medium">Subscribe</button>
+                        </div>
+                    </div>
+                    <div class="mt-6 p-4 telegram-secondary-bg rounded-xl">
+                        <h3 class="font-semibold mb-2">Payment Methods</h3>
+                        <div class="flex space-x-3 mb-4">
+                            <div class="w-12 h-8 bg-gray-200 rounded-md flex items-center justify-center">
+                                <i class="fab fa-telegram telegram-accent"></i>
+                            </div>
+                            <div class="w-12 h-8 bg-gray-200 rounded-md flex items-center justify-center">
+                                <i class="fas fa-wallet telegram-accent"></i>
+                            </div>
+                            <div class="w-12 h-8 bg-gray-200 rounded-md flex items-center justify-center">
+                                <i class="fab fa-bitcoin telegram-accent"></i>
+                            </div>
+                        </div>
+                        <p class="text-sm telegram-hint">Subscriptions renew automatically. Cancel anytime. Payments are processed securely through Telegram or your TON wallet.</p>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function renderReferralView() {
+            const stats = await getUserStats();
+            return `
+                <div class="p-4">
+                    <div class="flex items-center justify-between mb-6">
+                        <h1 class="text-2xl font-bold">Earn with Friends</h1>
+                        <span class="text-yellow-500 font-medium">${stats.earned}</span>
+                    </div>
+                    <div class="telegram-secondary-bg rounded-xl p-4 mb-6">
+                        <div class="flex items-center justify-between mb-4">
+                            <div>
+                                <p class="font-semibold">Your Referral Link</p>
+                                <p class="text-sm telegram-hint">Earn 3 TON for each friend who joins</p>
+                            </div>
+                            <span class="text-lg font-mono font-bold">${appState.referralCode}</span>
+                        </div>
+                        <button onclick="copyToClipboard('${appState.referralLink}')" class="w-full py-2 rounded-xl telegram-button font-medium">
+                            <i class="fas fa-copy mr-2"></i> Copy Link
+                        </button>
+                    </div>
+                    <div class="mb-6">
+                        <h2 class="text-lg font-semibold mb-3">Share Your Link</h2>
+                        <div class="grid grid-cols-4 gap-2">
+                            <button class="telegram-secondary-bg p-3 rounded-lg flex flex-col items-center">
+                                <i class="fab fa-telegram text-lg mb-1 telegram-accent"></i>
+                            </button>
+                            <button class="telegram-secondary-bg p-3 rounded-lg flex flex-col items-center">
+                                <i class="fab fa-twitter text-lg mb-1 telegram-accent"></i>
+                            </button>
+                            <button class="telegram-secondary-bg p-3 rounded-lg flex flex-col items-center">
+                                <i class="fab fa-whatsapp text-lg mb-1 telegram-accent"></i>
+                            </button>
+                            <button class="telegram-secondary-bg p-3 rounded-lg flex flex-col items-center">
+                                <i class="fas fa-ellipsis-h text-lg mb-1 telegram-accent"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="mb-6">
+                        <h2 class="text-lg font-semibold mb-3">Your Referrals</h2>
+                        <div class="space-y-3">
+                            ${stats.referrals > 0 ? `
+                                <div class="telegram-secondary-bg p-3 rounded-lg flex justify-between items-center">
+                                    <div class="flex items-center">
+                                        <div class="w-8 h-8 rounded-full telegram-secondary-bg flex items-center justify-center mr-3">
+                                            <i class="fas fa-user telegram-hint"></i>
+                                        </div>
+                                        <div>
+                                            <p class="font-medium">User</p>
+                                            <p class="text-xs telegram-hint">Joined recently</p>
+                                        </div>
+                                    </div>
+                                    <span class="text-yellow-500 font-medium">3 TON</span>
+                                </div>
+                            ` : '<p class="text-sm telegram-hint">No referrals yet.</p>'}
+                        </div>
+                    </div>
+                    <div class="mt-6 p-4 telegram-secondary-bg rounded-xl">
+                        <h3 class="font-semibold mb-2">Referral Tips</h3>
+                        <p class="text-sm mb-3">Share your link in crypto groups and explain how TonGPT helps you track the TON ecosystem. Top referrers earn bonus rewards!</p>
+                        <button class="text-xs telegram-button px-3 py-1 rounded-full">Leaderboard</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        document.addEventListener('DOMContentLoaded', render);
+    </script>
+</body>
+</html>

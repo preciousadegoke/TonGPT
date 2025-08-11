@@ -2,3 +2,10 @@ python-dotenv
 pyTelegramBotAPI
 beautifulsoup4
 requests
+redis
+openai
+aiogram==3.4.1
+tweepy
+textblob
+fastapi
+uvicorn
