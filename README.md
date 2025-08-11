@@ -1,16 +1,23 @@
-# TonGPT 🤖
+# 🤖 TonGPT — Telegram Alpha Bot for TON Ecosystem
 
-A Telegram bot that acts as a smart crypto analyst for the TON ecosystem. Powered by on-chain data, influencer tweets, and token prices.
+TonGPT is a Telegram bot that acts as a smart crypto analyst for the **TON blockchain**. It combines real-time on-chain data, memecoin trends, and GPT-powered replies to deliver sharp, concise alpha.
 
-## Features
+---
 
-- /start — Introduction
-- /price <token> — Get live price of meme tokens on TON
-- More coming soon...
+## ✨ Features
 
-## Getting Started
+- 🧠 `/ask` — Conversational GPT answers using OpenRouter
+- 🔍 `/info <address>` — Fetch token info from TonViewer
+- 🔥 `/scan` — Trending TON memecoins (price & % change)
+- 📈 `/trending` — GPT-based alpha commentary on memecoins
+- 📊 Coming soon: `/ston`, `/whale`, Durov tracker, farming alerts
 
-1. Clone the repo
-2. Create a `.env` file with your `BOT_TOKEN`
-3. Run `main.py` inside `/bot`
+---
 
+## 📸 Sample Commands
+
+```bash
+/ask What memecoins are trending today?
+/info EQCabcDEF123...xyz
+/scan
+/trending
