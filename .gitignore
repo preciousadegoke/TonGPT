@@ -1,11 +1,19 @@
 # 🔐 Secrets
 .env
 
+# C# / .NET
+**/bin/
+**/obj/
+**/appsettings.Development.json
+
+
 # 🐍 Python
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+myenv/
+.env
 
 # 🧪 Tests and cache
 *.log
@@ -16,19 +24,20 @@ venv/
 env/
 .venv/
 
+# 📦 Node / JS
+node_modules/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
 # 🧹 VS Code & IDEs
 .vscode/
 .idea/
+.DS_Store
 
 # 🔄 Byte-compiled and temp files
 *.bak
 *.swp
 *.tmp
-
-# 📝 Jupyter
-.ipynb_checkpoints/
-
-# 📦 Python packaging
 build/
-dist/
-*.egg-info/

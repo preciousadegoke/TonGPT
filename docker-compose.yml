@@ -1,0 +1,98 @@
+services:
+  # C# Engine (Infrastructure)
+  tongpt-engine:
+    build:
+      context: ./backend/TonGPT.Engine
+      dockerfile: Dockerfile
+    container_name: tongpt-engine
+    ports:
+      - "5090:5090"
+    environment:
+      - ConnectionStrings__DefaultConnection=Host=postgres;Database=TonGPT;Username=postgres;Password=password
+      - ASPNETCORE_ENVIRONMENT=Development
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - tongpt-dev-net
+
+  # Python Bot (AI Logic)
+  tongpt-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tongpt-bot
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    ports:
+      - "5080:8000"
+    environment:
+      - MINIAPP_PORT=8000
+      - ENGINE_URL=http://tongpt-engine:5090/api
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/TonGPT
+      - REDIS_URL=redis://redis:6379
+      # Env vars from .env will override if defined, or be added
+    depends_on:
+      - tongpt-engine
+      - redis
+    networks:
+      - tongpt-dev-net
+    command: [ "python", "main.py" ]
+
+  # Web UI (Nginx)
+  tongpt-web-ui:
+    image: nginx:alpine
+    container_name: tongpt-web-ui
+    ports:
+      - "3000:80"
+    volumes:
+      - ./miniapp:/usr/share/nginx/html/miniapp
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - tongpt-bot
+    networks:
+      - tongpt-dev-net
+
+  # Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: tongpt-postgres-dev
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=TonGPT
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data-dev-clean:/var/lib/postgresql/data
+    networks:
+      - tongpt-dev-net
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Cache
+  redis:
+    image: redis:7-alpine
+    container_name: tongpt-redis-dev
+    ports:
+      - "6379:6379"
+    networks:
+      - tongpt-dev-net
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres-data-dev-clean:
+
+
+networks:
+  tongpt-dev-net:
+    driver: bridge

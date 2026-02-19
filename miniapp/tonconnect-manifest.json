@@ -1,7 +1,7 @@
 {
-    "url": "https://<your-domain>",
-    "name": "TonGPT Mini App",
-    "iconUrl": "https://<your-domain>/icon.png",
-    "termsOfUseUrl": "https://<your-domain>/terms",
-    "privacyPolicyUrl": "https://<your-domain>/privacy"
+    "url": "https://tongpt.loca.lt",
+    "name": "TonGPT",
+    "iconUrl": "https://tongpt.loca.lt/miniapp/logo.png",
+    "termsOfUseUrl": "https://tongpt.loca.lt/terms",
+    "privacyPolicyUrl": "https://tongpt.loca.lt/privacy"
 }

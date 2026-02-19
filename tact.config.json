@@ -1,0 +1,10 @@
+{
+    "projects": [
+        {
+            "name": "subscription",
+            "path": "contracts/subscription.tact",
+            "output": "./wrappers",
+            "active": true
+        }
+    ]
+}

@@ -1,0 +1,28 @@
+{
+  "name": "tongpt-web3",
+  "version": "1.0.0",
+  "description": "Tact Smart Contracts for TonGPT",
+  "scripts": {
+    "build": "blueprint build",
+    "test": "jest",
+    "deploy": "blueprint run"
+  },
+  "author": "Antigravity",
+  "license": "MIT",
+  "devDependencies": {
+    "@tact-lang/compiler": "^1.2.0",
+    "@tact-lang/emulator": "^4.2.3",
+    "@ton/blueprint": "^0.43.0",
+    "@ton/sandbox": "latest",
+    "@ton/test-utils": "latest",
+    "@ton/core": "latest",
+    "@ton/crypto": "latest",
+    "@ton/ton": "^15.2.1",
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.24",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}

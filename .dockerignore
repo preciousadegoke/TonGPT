@@ -1,0 +1,28 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+myenv/
+venv/
+
+# Node (if any)
+node_modules/
+
+# .NET
+bin/
+obj/
+.vs/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs & temp
+logs/
+tmp/

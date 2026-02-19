@@ -1,5 +1,3 @@
- # services/whale_watcher.py
-
 import requests
 from typing import List, Dict, Optional
 
