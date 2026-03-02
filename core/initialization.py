@@ -92,16 +92,21 @@ async def test_connections(config: Dict[str, Any]) -> None:
 async def start_background_tasks(services: Dict[str, Any]) -> None:
     """Start all background monitoring tasks"""
     X_monitor = services.get('X_monitor')
-    # subscription_manager = services.get('subscription_manager')
     
     # Start X monitoring
     if X_monitor:
         logger.info("🐦 Starting X monitoring service...")
         asyncio.create_task(X_monitor.enhanced_monitoring_cycle())
     
-    # Subscription cleanup removed
-
-    # Subscription cleanup removed - handled by C# Engine or TTL
+    # Start wallet monitoring (blockchain.py) when Redis is available
+    try:
+        from utils.redis_conn import redis_client
+        if redis_client:
+            from services.blockchain import monitor_followed_wallets
+            asyncio.create_task(monitor_followed_wallets())
+            logger.info("👛 Wallet monitoring (followed addresses) started.")
+    except Exception as e:
+        logger.warning("⚠ Wallet monitoring not started: %s", e)
 
 async def initialize_all_services(config: Dict[str, Any]) -> Dict[str, Any]:
     """Initialize all services and return service instances"""

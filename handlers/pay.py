@@ -196,9 +196,22 @@ async def successful_payment_handler(message: Message):
         plan = PLANS.get(plan_key)
         
         if plan:
-            # Activate premium subscription
-            await activate_premium_plan(user_id, plan_key, plan)
-            
+            # Record payment in Engine (payment verification), then upgrade
+            payment_id = await engine_client.record_payment(
+                str(user_id), plan_key, "telegram_stars",
+                external_id=getattr(payment, "telegram_payment_charge_id", None) or str(payment.total_amount)
+            )
+            if payment_id:
+                await engine_client.log_activity(user_id, "payment_completed", {"plan": plan_key, "provider": "telegram_stars"})
+                await activate_premium_plan(user_id, plan_key, plan, payment_record_id=payment_id)
+            else:
+                logger.error(f"Payment recording failed for user {user_id} plan {plan_key} — skipping activation")
+                await message.reply(
+                    "⚠️ Payment received but activation failed. Please contact @TonGPT_Support with your receipt.",
+                    parse_mode="HTML"
+                )
+                return
+
             # Track revenue
             stars_received = payment.total_amount // 100
             redis_client.incrbyfloat("revenue_stars", stars_received)
@@ -275,25 +288,26 @@ async def referrals_callback(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
     referral_link = f"https://t.me/TonGptt_bot?start={user_id}"
     
-    # Get referral count from Redis
+    # Get VERIFIED referral count from Redis (only counts validated referrals)
     referral_count = await get_referral_count(user_id)
     next_reward = get_next_referral_reward(referral_count)
     
     msg = (
         f"🎁 <b>Referral Program</b>\n\n"
         f"💰 <b>Earn Free Access:</b>\n"
-        f"• 5 referrals = Starter Plan (30 days)\n"
-        f"• 10 referrals = Pro Plan (30 days)\n"
-        f"• 25 referrals = Elite Plan (30 days)\n\n"
+        f"• 5 verified referrals = Starter Plan (30 days)\n"
+        f"• 10 verified referrals = Pro Plan (30 days)\n"
+        f"• 25 verified referrals = Elite Plan (30 days)\n\n"
         f"🔗 <b>Your Referral Link:</b>\n"
         f"<code>{referral_link}</code>\n\n"
         f"📊 <b>Current Status:</b>\n"
-        f"• Referrals: {referral_count}\n"
+        f"• Verified Referrals: {referral_count}\n"
         f"• Next reward: {next_reward}\n\n"
         f"📈 <b>How it works:</b>\n"
         f"1. Share your link with friends\n"
         f"2. They join and use the bot\n"
-        f"3. Get automatic plan upgrades"
+        f"3. Referral counts after 24h + 3 commands\n"
+        f"4. Get automatic plan upgrades"
     )
     
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -448,11 +462,16 @@ def get_next_referral_reward(count: int) -> str:
     else:
         return "All rewards unlocked!"
 
-async def activate_premium_plan(user_id: int, plan_key: str, plan: dict):
-    """Activate premium plan for user via C# Engine"""
+def _plan_to_engine(plan_key: str) -> str:
+    """Map Python plan key to C# SubscriptionPlan enum name."""
+    return {"starter": "Starter", "pro": "Pro", "pro_plus": "ProPlus", "elite": "Elite"}.get(plan_key, plan_key)
+
+
+async def activate_premium_plan(user_id: int, plan_key: str, plan: dict, payment_record_id: str = None):
+    """Activate premium plan for user via C# Engine (requires payment_record_id from record_payment)."""
     try:
-        # Call C# Engine to upgrade user
-        success = await engine_client.upgrade_user(str(user_id), plan_key)
+        plan_value = _plan_to_engine(plan_key)
+        success = await engine_client.upgrade_user(str(user_id), plan_value, payment_record_id=payment_record_id)
         
         if success:
             logger.info(f"Successfully activated {plan_key} for {user_id} via Engine")

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any
 import logging
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,14 +31,74 @@ def create_miniapp_server() -> FastAPI:
         lifespan=lifespan
     )
 
+    from core.config import load_config
+    config = load_config()
+    allowed_origins = config.get("CORS_ALLOWED_ORIGINS", ["*"])
+    
     # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # In production, specify your domain
+        allow_origins=allowed_origins,
         allow_credentials=True,
-        allow_methods=["*"],
+        allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
+
+    # API IP Rate Limiting Middleware
+    from fastapi import Request
+    from starlette.middleware.base import BaseHTTPMiddleware
+    import time
+    
+    class IPRateLimitMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            # Only rate limit /api defaults
+            if request.url.path.startswith("/api/"):
+                ip = request.client.host if request.client else "127.0.0.1"
+                try:
+                    from utils.redis_conn import redis_client
+                    rc = getattr(redis_client, "client", redis_client)
+                    if rc:
+                        # 1. IP Ban check
+                        ban_key = f"ip_ban:{ip}"
+                        if rc.exists(ban_key):
+                            from fastapi.responses import JSONResponse
+                            return JSONResponse(status_code=403, content={"detail": "IP temporarily banned due to suspicious activity."})
+                            
+                        # 2. Concurrency Check
+                        concurrency_key = f"active_conn:{ip}"
+                        current_active = rc.incr(concurrency_key)
+                        if current_active == 1:
+                            rc.expire(concurrency_key, 60) # Fail-safe TTL
+                        
+                        if current_active > 15: # Max 15 concurrent requests per IP
+                            rc.decr(concurrency_key)
+                            from fastapi.responses import JSONResponse
+                            return JSONResponse(status_code=429, content={"detail": "Too many concurrent connections from this IP."})
+                        
+                        try:
+                            # 3. IP burst tracking
+                            burst_key = f"miniapp_burst:{ip}"
+                            count = rc.incr(burst_key)
+                            if count == 1:
+                                rc.expire(burst_key, 60) # 60 seconds
+                            
+                            if count > 60: # Max 60 requests per minute per IP to miniapp
+                                logger.warning(f"BLOCKED Miniapp IP {ip} (Rate Limit Exceeded)")
+                                from fastapi.responses import JSONResponse
+                                return JSONResponse(status_code=429, content={"detail": "Slow down! Too many requests."})
+                                
+                            return await call_next(request)
+                        finally:
+                            try:
+                                rc.decr(concurrency_key)
+                            except Exception:
+                                pass
+                except Exception as e:
+                    logger.debug(f"IP Rate limit middleware error: {e}")
+            
+            return await call_next(request)
+            
+    app.add_middleware(IPRateLimitMiddleware)
 
     # Mount static files for the mini-app
     app.mount("/miniapp", StaticFiles(directory="miniapp"), name="miniapp")
@@ -235,6 +295,248 @@ async def get_ai_analysis(data: dict):
     except Exception as e:
         logger.error(f"Error in /api/ai-analysis: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== WALLET AUTH WITH TON_PROOF VERIFICATION ====================
+
+@miniapp.get("/api/wallet/generate-payload")
+async def generate_wallet_proof_payload():
+    """Generate a server-side nonce for ton_proof challenge"""
+    import secrets as sec
+    payload = f"tonproof-{sec.token_hex(32)}"
+    
+    # Store payload in Redis with 5-minute TTL for later verification
+    try:
+        from utils.redis_conn import redis_client
+        if redis_client and redis_client.client:
+            await redis_client.client.setex(f"tonproof:{payload}", 300, "valid")
+        else:
+            raise HTTPException(status_code=500, detail="Wallet verification service unavailable")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Could not store ton_proof nonce in Redis: {e}")
+        raise HTTPException(status_code=500, detail="Wallet verification service temporarily unavailable")
+    
+    return {"payload": payload}
+
+
+@miniapp.post("/api/wallet/auth")
+async def authenticate_wallet(request: Request, data: dict):
+    """
+    Verify wallet ownership via TON Connect ton_proof, then forward to C# engine.
+    
+    The ton_proof is a signed message produced by the wallet that proves the user
+    controls the private key corresponding to the wallet address.
+    """
+    import json
+    import hashlib
+    import hmac
+    import base64
+    import time
+    
+    ip = request.client.host if request.client else "127.0.0.1"
+    
+    telegram_id = data.get("TelegramId")
+    address = data.get("Address")
+    public_key = data.get("PublicKey")
+    proof_json = data.get("Proof")
+    state_init = data.get("StateInit")
+    init_data = data.get("TelegramInitData")
+    
+    if not all([telegram_id, address, proof_json]):
+        raise HTTPException(status_code=400, detail="Missing required fields: TelegramId, Address, Proof")
+        
+    # Telegram initData Cryptographic Validation
+    if init_data:
+        try:
+            from urllib.parse import parse_qsl
+            import os
+            
+            init_data_dict = dict(parse_qsl(init_data))
+            hash_val = init_data_dict.pop('hash', None)
+            
+            if hash_val:
+                data_check_string = '\n'.join(f"{k}={v}" for k, v in sorted(init_data_dict.items()))
+                secret_key = hmac.new(b"WebAppData", os.getenv("BOT_TOKEN", "").encode(), hashlib.sha256).digest()
+                calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+                
+                if calculated_hash != hash_val:
+                    raise ValueError("Invalid initData hash")
+                    
+                # Optional: Check auth_date for expiration (e.g. 24 hours)
+                auth_date = int(init_data_dict.get('auth_date', 0))
+                if time.time() - auth_date > 86400:
+                    raise ValueError("initData expired")
+        except Exception as e:
+            logger.warning(f"Telegram initData validation failed for IP {ip}: {e}")
+            try:
+                from utils.redis_conn import redis_client
+                rc = getattr(redis_client, "client", redis_client)
+                if rc:
+                    fail_key = f"initdata_fail:{ip}"
+                    fails = rc.incr(fail_key)
+                    if fails == 1:
+                        rc.expire(fail_key, 60)
+                    if fails >= 5: # Ban after 5 failures in 1 min
+                        rc.setex(f"ip_ban:{ip}", 600, "1") # 10 minute ban
+                        logger.critical(f"BANNED IP {ip} for brute-forcing initData")
+            except Exception:
+                pass
+            raise HTTPException(status_code=403, detail="Invalid application environment: authentication failed.")
+    
+    # Block the dev bypass
+    if proof_json == "SKIP_VERIFICATION_DEV":
+        raise HTTPException(status_code=403, detail="Proof verification cannot be skipped")
+    
+    # Parse proof
+    try:
+        proof = json.loads(proof_json)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid proof format")
+    
+    # Validate proof structure
+    required_fields = ["timestamp", "domain", "signature", "payload"]
+    if not all(f in proof for f in required_fields):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Proof must contain: {', '.join(required_fields)}"
+        )
+    
+    # Verify timestamp (proof must be less than 5 minutes old)
+    import time
+    proof_timestamp = int(proof["timestamp"])
+    current_time = int(time.time())
+    if abs(current_time - proof_timestamp) > 300:
+        raise HTTPException(status_code=403, detail="Proof expired (older than 5 minutes)")
+    
+    # Verify nonce was generated by our server (if Redis available)
+    payload_nonce = proof.get("payload", "")
+    try:
+        from utils.redis_conn import redis_client
+        if redis_client and redis_client.client:
+            # Atomic get-and-delete via Lua script to prevent TOCTOU nonce replay
+            lua_script = """
+            local val = redis.call('GET', KEYS[1])
+            if val then
+                redis.call('DEL', KEYS[1])
+                return val
+            end
+            return nil
+            """
+            stored = await redis_client.client.eval(lua_script, 1, f"tonproof:{payload_nonce}")
+            if stored is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Invalid or expired proof payload. Reconnect wallet to try again."
+                )
+        else:
+            raise HTTPException(status_code=500, detail="Redis connection unavailable for validation")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Redis nonce check failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error during nonce validation")
+    
+    # Verify Ed25519 signature (if nacl is available)
+    verification_passed = False
+    if public_key:
+        try:
+            import nacl.signing
+            import nacl.exceptions
+            
+            # TON Connect ton_proof signature format:
+            # message = "ton-proof-item-v2/" + address_workchain + address_hash + domain_len + domain + timestamp + payload
+            domain = proof["domain"]
+            domain_value = domain.get("value", "") if isinstance(domain, dict) else str(domain)
+            domain_len = domain.get("lengthBytes", len(domain_value)) if isinstance(domain, dict) else len(domain_value)
+            
+            # Build the message that was signed
+            # Prefix: "ton-proof-item-v2/"
+            prefix = b"ton-proof-item-v2/"
+            
+            # Parse address to get workchain and hash
+            # Raw address format in TON Connect is workchain:hash (hex)
+            addr_parts = address.split(":")
+            if len(addr_parts) == 2:
+                workchain = int(addr_parts[0]).to_bytes(4, byteorder='big', signed=True)
+                addr_hash = bytes.fromhex(addr_parts[1])
+            else:
+                # Address may be in different format — skip crypto verification
+                logger.warning(f"Unexpected address format: {address[:20]}...")
+                verification_passed = False
+                raise ValueError("Address not in raw format")
+            
+            # Build msg
+            domain_len_bytes = domain_len.to_bytes(4, byteorder='little')
+            timestamp_bytes = proof_timestamp.to_bytes(8, byteorder='little')
+            payload_bytes = payload_nonce.encode('utf-8')
+            
+            msg = (
+                prefix +
+                workchain +
+                addr_hash +
+                domain_len_bytes +
+                domain_value.encode('utf-8') +
+                timestamp_bytes +
+                payload_bytes
+            )
+            
+            # Hash the message
+            msg_hash = hashlib.sha256(msg).digest()
+            
+            # TON wraps with "ton-connect" prefix
+            ton_connect_prefix = b"\xff\xffton-connect"
+            full_msg = hashlib.sha256(ton_connect_prefix + msg_hash).digest()
+            
+            # Verify signature
+            signature = base64.b64decode(proof["signature"])
+            verify_key = nacl.signing.VerifyKey(bytes.fromhex(public_key))
+            verify_key.verify(full_msg, signature)
+            
+            verification_passed = True
+            logger.info(f"ton_proof signature verified for address {address[:20]}...")
+            
+        except nacl.exceptions.BadSignatureError:
+            logger.warning(f"Invalid ton_proof signature for address {address[:20]}...")
+            raise HTTPException(status_code=403, detail="Invalid wallet signature — ownership verification failed")
+        except ImportError:
+            logger.error("CRITICAL: PyNaCl missing — cannot verify wallet signatures securely.")
+            raise HTTPException(status_code=500, detail="Server misconfigured: missing security dependencies")
+        except ValueError as ve:
+            logger.error(f"Could not parse address for crypto verification: {ve}")
+            raise HTTPException(status_code=400, detail="Invalid address format for verification")
+        except Exception as e:
+            logger.error(f"Unexpected error during ton_proof verification: {e}")
+            raise HTTPException(status_code=500, detail="Verification error")
+    else:
+        logger.warning("No public key provided — cannot verify signature")
+        raise HTTPException(status_code=400, detail="PublicKey is required for wallet verification")
+    
+    # Validate TON address format
+    from core.security import SecurityManager
+    security = SecurityManager()
+    if not security.validate_ton_address(address):
+        raise HTTPException(status_code=400, detail="Invalid TON address format")
+    
+    # Forward verified wallet to C# Engine
+    try:
+        from services.engine_client import engine_client
+        result = await engine_client._post("Wallet/auth", {
+            "TelegramId": telegram_id,
+            "Address": address,
+            "PublicKey": public_key or "",
+            "Proof": "VERIFIED_BY_PYTHON_SERVER",
+            "StateInit": state_init or ""
+        })
+        if result.get("error"):
+            raise HTTPException(status_code=result.get("error", 500), detail=result.get("message", "Engine rejected wallet link"))
+        logger.info(f"Wallet {address[:20]}... linked to user {telegram_id}")
+        return {"status": "success", "message": "Wallet verified and linked", "verified": verification_passed}
+    except Exception as e:
+        logger.error(f"Failed to forward wallet auth to engine: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save wallet link")
+
 
 @miniapp.get("/api/health")
 async def miniapp_health_check():

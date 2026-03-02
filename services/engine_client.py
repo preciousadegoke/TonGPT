@@ -17,16 +17,21 @@ class EngineClient:
         if base_url:
             self.base_url = base_url.rstrip('/')
         else:
-        else:
             self.base_url = os.getenv("ENGINE_URL", "http://localhost:5090/api").rstrip('/')
-        self.api_key = os.getenv("ENGINE_API_KEY", "tongpt-secret-key-123")
-        self.headers = {"X-API-Key": self.api_key, "Content-Type": "application/json"}
-        
+        self._api_key = os.getenv("ENGINE_API_KEY")
+
+    def _headers(self) -> Dict[str, str]:
+        """Headers for Engine API (include API key when configured)."""
+        h = {"Content-Type": "application/json"}
+        if self._api_key:
+            h["X-Api-Key"] = self._api_key
+        return h
+
     async def _get(self, endpoint: str) -> Dict[str, Any]:
         """Internal helper for GET requests"""
-        async with aiohttp.ClientSession(headers=self.headers) as session:
+        async with aiohttp.ClientSession() as session:
             try:
-                async with session.get(f"{self.base_url}/{endpoint}") as response:
+                async with session.get(f"{self.base_url}/{endpoint}", headers=self._headers()) as response:
                     if response.status == 200:
                         return await response.json()
                     elif response.status == 404:
@@ -40,9 +45,9 @@ class EngineClient:
 
     async def _post(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Internal helper for POST requests"""
-        async with aiohttp.ClientSession(headers=self.headers) as session:
+        async with aiohttp.ClientSession() as session:
             try:
-                async with session.post(f"{self.base_url}/{endpoint}", json=data) as response:
+                async with session.post(f"{self.base_url}/{endpoint}", json=data, headers=self._headers()) as response:
                     if response.status in [200, 201]:
                         return await response.json()
                     
@@ -52,6 +57,16 @@ class EngineClient:
             except Exception as e:
                 logger.error(f"Engine API connection failed: {e}")
                 return {"error": "connection_failed"}
+
+    async def _delete(self, endpoint: str) -> bool:
+        """Internal helper for DELETE requests. Returns True if status 200."""
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.delete(f"{self.base_url}/{endpoint}", headers=self._headers()) as response:
+                    return response.status == 200
+            except Exception as e:
+                logger.error(f"Engine API DELETE {endpoint} failed: {e}")
+                return False
 
     # ==========================================
     # User Management
@@ -73,6 +88,14 @@ class EngineClient:
     async def get_user(self, telegram_id: int) -> Optional[Dict[str, Any]]:
         """Get user details by Telegram ID"""
         return await self._get(f"User/{telegram_id}")
+
+    async def export_user_data(self, telegram_id: int) -> Optional[Dict[str, Any]]:
+        """Export all user data (GDPR data portability). Returns dict or None."""
+        return await self._get(f"User/export/{telegram_id}")
+
+    async def delete_user_data(self, telegram_id: int) -> bool:
+        """Delete or anonymize user data (GDPR right to erasure)."""
+        return await self._delete(f"User/data/{telegram_id}")
 
     # ==========================================
     # Chat & Context
@@ -120,12 +143,29 @@ class EngineClient:
         """Check user subscription status"""
         return await self._get(f"Subscription/status/{telegram_id}") or {"tier": "free", "credits": 0}
 
-    async def upgrade_user(self, telegram_id: str, plan: str) -> bool:
-        """Upgrade user plan"""
-        result = await self._post("Subscription/upgrade", {
+    async def record_payment(self, telegram_id: str, plan: str, provider: str, external_id: str = None) -> Optional[str]:
+        """Record a completed payment. Returns payment_id (guid string) for use in upgrade_user."""
+        data = {
             "telegramId": str(telegram_id),
-            "plan": plan
-        })
+            "plan": plan,
+            "provider": provider,
+            "externalId": external_id or "",
+        }
+        result = await self._post("Payment/record", data)
+        if "error" in result:
+            return None
+        pid = result.get("paymentId")
+        return str(pid) if pid else None
+
+    async def upgrade_user(self, telegram_id: str, plan: str, payment_record_id: str = None) -> bool:
+        """Upgrade user plan. Requires payment_record_id from record_payment (payment verification)."""
+        payload = {
+            "telegramId": str(telegram_id),
+            "plan": plan,
+        }
+        if payment_record_id:
+            payload["paymentRecordId"] = payment_record_id
+        result = await self._post("Subscription/upgrade", payload)
         return result.get("status") == "Success"
 
     # ==========================================

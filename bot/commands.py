@@ -166,9 +166,10 @@ def categorize_memecoins(memecoins):
     return categories
 
 async def check_user_credits(user_id, credits_needed=1):
-    """Check and consume user credits"""
+    """Check and consume user credits — fail-closed"""
     if not redis_client:
-        return True
+        logger.warning("Redis unavailable — denying credit check (fail-closed)")
+        return False
         
     try:
         # Get limits and usage from Redis (managed by pay.py/Engine)
@@ -192,19 +193,20 @@ async def check_user_credits(user_id, credits_needed=1):
         
     except Exception as e:
         logger.error(f"Credit check error: {e}")
-        return True  # Default to allow on error
+        return False  # Fail-closed: deny on error
 
 async def check_rate_limit(user_id, tier="free"):
-    """Check user rate limits"""
+    """Check user rate limits — fail-closed"""
     if not rate_limiter:
-        return True
+        logger.warning("Rate limiter unavailable — denying request (fail-closed)")
+        return False
     
     try:
         is_limited, info = await rate_limiter.check_rate_limit(user_id, tier)
         return not is_limited
     except Exception as e:
         logger.error(f"Rate limit check error: {e}")
-        return True  # Default to allow on error
+        return False  # Fail-closed: deny on error
 
 def log_user_action(user_id, action, success=True, metadata=None):
     """Safe logging wrapper using EngineClient"""
@@ -348,12 +350,88 @@ async def help_command(message: types.Message):
         "• /join - Community links\n"
         "• /support - Contact support\n\n"
         
+        "🔒 <b>Privacy (GDPR):</b>\n"
+        "• /export - Download your data\n"
+        "• /deletedata - Delete your data\n\n"
+        
         "🎯 <b>Focus:</b> Pure TON memecoins only - no major cryptos!\n"
         "💡 <b>Tip:</b> Free plan includes 100 credits/month"
     )
 
     await message.reply(help_text, parse_mode="HTML")
     log_user_action(user_id, "help_command", True)
+
+@router.message(Command("export"))
+async def export_data_command(message: types.Message):
+    """Export user data (GDPR data portability)."""
+    user_id = message.from_user.id
+    try:
+        data = await engine_client.export_user_data(user_id)
+        if not data:
+            await message.reply("❌ No data found or service unavailable.")
+            return
+        import json
+        # Send as file if large, else as message
+        payload = json.dumps(data, indent=2, default=str)
+        if len(payload) > 3500:
+            from aiogram.types import BufferedInputFile
+            file = BufferedInputFile(file=payload.encode("utf-8"), filename="tongpt_export.json")
+            await message.reply_document(
+                document=file,
+                caption="📦 Your TonGPT data export. See PRIVACY.md for how we use data."
+            )
+        else:
+            await message.reply(
+                f"<pre>{payload[:3500]}</pre>\n\n📄 Full export available in repo PRIVACY.md.",
+                parse_mode="HTML"
+            )
+        log_user_action(user_id, "export_data", True)
+    except Exception as e:
+        logger.error(f"Export data error: {e}")
+        await message.reply("❌ Could not export data. Please try again later.")
+        log_user_action(user_id, "export_data", False, {"error": str(e)})
+
+@router.message(Command("deletedata"))
+async def delete_data_command(message: types.Message):
+    """Delete or anonymize user data (GDPR right to erasure)."""
+    user_id = message.from_user.id
+    try:
+        ok = await engine_client.delete_user_data(user_id)
+        if ok:
+            await message.reply(
+                "✅ Your data has been deleted or anonymized. "
+                "We may retain minimal records required by law (e.g. payment audit). "
+                "You can keep using the bot; a new record will be created if you use /start again."
+            )
+            log_user_action(user_id, "delete_data", True)
+        else:
+            await message.reply("❌ Could not complete deletion. Please try again or contact support.")
+            log_user_action(user_id, "delete_data", False)
+    except Exception as e:
+        logger.error(f"Delete data error: {e}")
+        await message.reply("❌ Could not delete data. Please try again later.")
+        log_user_action(user_id, "delete_data", False, {"error": str(e)})
+
+@router.message(Command("accept_terms"))
+async def accept_terms_command(message: types.Message):
+    """Accept Terms of Service and Privacy Policy"""
+    CURRENT_TOS_VERSION = "1.0"
+    user_id = message.from_user.id
+    try:
+        from utils.redis_conn import redis_client
+        if redis_client:
+            redis_client.set(f"terms_accepted:{user_id}", CURRENT_TOS_VERSION)
+            
+        await message.reply(
+            f"✅ <b>Terms Accepted (v{CURRENT_TOS_VERSION})!</b>\n\n"
+            "Thank you for accepting the TonGPT Terms of Service and Privacy Policy.\n"
+            "You can now use all features of the bot. Try /scan or /ask to get started!",
+            parse_mode="HTML"
+        )
+        log_user_action(user_id, "accept_terms", True, {"version": CURRENT_TOS_VERSION})
+    except Exception as e:
+        logger.error(f"Error accepting terms: {e}")
+        await message.reply("❌ An error occurred. Please try again later.")
 
 @router.message(Command("scan"))
 async def scan_command(message: types.Message):

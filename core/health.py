@@ -32,8 +32,30 @@ async def health_check(bot=None, gpt_handler=None, X_monitor=None, subscription_
     # Check Redis
     try:
         from utils.redis_conn import redis_client
-        redis_client.ping()
-        health_status["redis"] = True
+        if redis_client.ping():
+            health_status["redis"] = True
+            
+            # --- Redis Pressure Monitor ---
+            try:
+                rc = getattr(redis_client, "client", redis_client)
+                if rc:
+                    info = rc.info('memory')
+                    used_memory = info.get('used_memory', 0)
+                    max_memory = info.get('maxmemory', 0)
+                    
+                    if max_memory > 0:
+                        memory_usage = used_memory / max_memory
+                        health_status["redis_memory_usage"] = memory_usage
+                        
+                        if memory_usage > 0.90:
+                            logger.critical(f"🚨 REDIS PRESSURE FAST EXHAUSTION: Memory usage at {memory_usage:.1%}! Degrading non-critical systems.")
+                            rc.setex("system_degraded", 300, "true")
+                        elif memory_usage > 0.80:
+                            logger.warning(f"⚠️ REDIS HIGH PRESSURE: Memory usage at {memory_usage:.1%}. Consider scaling up.")
+            except Exception as e:
+                logger.error(f"Redis pressure monitor failed: {e}")
+            # ------------------------------
+            
     except ImportError:
         logger.warning("Redis module not found")
     except Exception as e:

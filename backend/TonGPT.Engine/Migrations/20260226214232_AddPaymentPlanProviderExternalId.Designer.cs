@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using TonGPT.Engine.Data;
@@ -11,9 +12,11 @@ using TonGPT.Engine.Data;
 namespace TonGPT.Engine.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260226214232_AddPaymentPlanProviderExternalId")]
+    partial class AddPaymentPlanProviderExternalId
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -115,10 +118,6 @@ namespace TonGPT.Engine.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("ExternalId", "Provider")
-                        .IsUnique()
-                        .HasFilter("\"ExternalId\" IS NOT NULL");
 
                     b.ToTable("Payments");
                 });

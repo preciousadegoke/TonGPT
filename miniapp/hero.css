@@ -1,0 +1,599 @@
+/* Miniapp Scoped Hero Section Styles */
+#hero-landing {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 1000;
+    background: linear-gradient(135deg, #01030a 0%, #050a14 50%, #03081a 100%);
+    color: #ffffff;
+    overflow: hidden;
+    font-family: 'Inter', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    transition: opacity 0.5s ease;
+}
+
+#hero-landing.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+#hero-landing * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* Ambient glowing backgrounds */
+#hero-landing .ambient-glow {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(150px);
+    z-index: 0;
+    pointer-events: none;
+}
+
+#hero-landing .glow-1 {
+    top: -20%;
+    left: -10%;
+    width: 50vw;
+    height: 50vw;
+    background: rgba(0, 152, 234, 0.05);
+}
+
+#hero-landing .glow-2 {
+    bottom: -30%;
+    right: -10%;
+    width: 60vw;
+    height: 60vw;
+    background: rgba(114, 0, 234, 0.04);
+}
+
+/* Canvas Layers */
+#hero-landing #bg-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 1;
+    opacity: 0.6;
+}
+
+#hero-landing #webgl-container {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 50vw;
+    height: 100vh;
+    z-index: 2;
+    overflow: hidden;
+}
+
+#hero-landing #webgl-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    outline: none;
+}
+
+#hero-landing #hud-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 3;
+    pointer-events: none;
+}
+
+/* Layout Dividers */
+#hero-landing .center-split {
+    position: absolute;
+    left: 50vw;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 152, 234, 0.4) 50%, rgba(0, 0, 0, 0) 100%);
+    box-shadow: 0 0 25px rgba(0, 152, 234, 0.8);
+    z-index: 4;
+    pointer-events: none;
+}
+
+/* Top Navigation */
+#hero-landing .nav-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    padding: 2.5rem 4rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    z-index: 20;
+    pointer-events: none;
+}
+
+#hero-landing .nav-overlay>* {
+    pointer-events: auto;
+}
+
+#hero-landing .logo {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+}
+
+#hero-landing .logo-icon {
+    position: relative;
+    width: 28px;
+    height: 28px;
+}
+
+#hero-landing .diamond-solid {
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    background: linear-gradient(135deg, #0098EA, #0056D6);
+    transform: rotate(45deg);
+    top: 5px;
+    left: 5px;
+    box-shadow: 0 0 10px rgba(0, 152, 234, 0.5);
+}
+
+#hero-landing .diamond-outline {
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    background: transparent;
+    border: 1.5px solid rgba(0, 152, 234, 0.4);
+    transform: rotate(45deg);
+    top: 2px;
+    left: 8px;
+}
+
+#hero-landing .logo-text {
+    font-size: 1.4rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+}
+
+#hero-landing .nav-center {
+    display: flex;
+    gap: 3.5rem;
+    justify-content: center;
+    position: absolute;
+    left: 0;
+    width: 100%;
+    transition: none;
+    pointer-events: none;
+}
+
+#hero-landing .nav-links {
+    display: flex;
+    gap: 3.5rem;
+    justify-content: space-between;
+    position: relative;
+    width: 340px;
+    margin: 0 auto;
+}
+
+#hero-landing .nav-links::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: -10px;
+    bottom: -10px;
+    width: 1px;
+    background: transparent;
+}
+
+#hero-landing .nav-links a {
+    color: #8b949e;
+    text-decoration: none;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    transition: all 0.3s;
+    pointer-events: auto;
+    z-index: 5;
+    position: relative;
+}
+
+#hero-landing .nav-links .group-l {
+    display: flex;
+    gap: 3.5rem;
+    padding-right: 3rem;
+}
+
+#hero-landing .nav-links .group-r {
+    display: flex;
+    gap: 3.5rem;
+    padding-left: 3rem;
+}
+
+#hero-landing .nav-links a:hover {
+    color: #fff;
+    text-shadow: 0 0 12px rgba(0, 152, 234, 0.6);
+}
+
+#hero-landing .nav-right {
+    display: flex;
+    align-items: center;
+    gap: 2rem;
+}
+
+#hero-landing .lang-toggle {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    color: #8b949e;
+    cursor: pointer;
+    transition: color 0.3s;
+}
+
+#hero-landing .lang-toggle:hover {
+    color: #ffffff;
+}
+
+#hero-landing .btn-cta {
+    background: rgba(0, 152, 234, 0.05);
+    border: 1px solid rgba(0, 152, 234, 0.3);
+    color: #0098EA;
+    padding: 0.75rem 1.75rem;
+    font-family: 'Inter', sans-serif;
+    font-weight: 500;
+    font-size: 0.85rem;
+    border-radius: 2px;
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    position: relative;
+    overflow: hidden;
+    backdrop-filter: blur(5px);
+}
+
+#hero-landing .btn-cta::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 50%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(0, 152, 234, 0.2), transparent);
+    transition: all 0.5s ease;
+}
+
+#hero-landing .btn-cta:hover {
+    background: rgba(0, 152, 234, 0.15);
+    box-shadow: 0 0 20px rgba(0, 152, 234, 0.4);
+    color: #fff;
+    border-color: rgba(0, 152, 234, 0.8);
+}
+
+#hero-landing .btn-cta:hover::before {
+    left: 100%;
+}
+
+/* Left Pane */
+#hero-landing .left-pane {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 50vw;
+    height: 100vh;
+    padding: 0 5rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    z-index: 10;
+    pointer-events: none;
+}
+
+#hero-landing .left-pane>* {
+    pointer-events: auto;
+}
+
+#hero-landing .overline {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    color: #0098EA;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    margin-bottom: 2rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+#hero-landing .overline::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    background: #0098EA;
+    box-shadow: 0 0 8px #0098EA;
+}
+
+#hero-landing .headline {
+    font-size: 5.5rem;
+    line-height: 1.05;
+    margin: 0 0 2rem 0;
+    letter-spacing: -0.02em;
+}
+
+#hero-landing .headline .w-med {
+    font-weight: 500;
+    color: #ffffff;
+    text-shadow: 0 0 40px rgba(0, 152, 234, 0.1);
+}
+
+#hero-landing .headline .w-light {
+    font-weight: 200;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+#hero-landing .description {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.95rem;
+    color: #8b949e;
+    line-height: 1.7;
+    max-width: 80%;
+    margin-bottom: 3.5rem;
+}
+
+#hero-landing .actions {
+    display: flex;
+    gap: 1.5rem;
+}
+
+/* Shared Tech Brackets */
+#hero-landing .bracket {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    border: 1.5px solid #0098EA;
+    transition: all 0.3s;
+}
+
+#hero-landing .bracket.tl {
+    top: -2px;
+    left: -2px;
+    border-right: none;
+    border-bottom: none;
+}
+
+#hero-landing .bracket.tr {
+    top: -2px;
+    right: -2px;
+    border-left: none;
+    border-bottom: none;
+}
+
+#hero-landing .bracket.bl {
+    bottom: -2px;
+    left: -2px;
+    border-right: none;
+    border-top: none;
+}
+
+#hero-landing .bracket.br {
+    bottom: -2px;
+    right: -2px;
+    border-left: none;
+    border-top: none;
+}
+
+#hero-landing .btn-glass {
+    background: rgba(4, 9, 20, 0.4);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(0, 152, 234, 0.2);
+    color: #fff;
+    padding: 1.1rem 2.2rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    position: relative;
+    transition: all 0.3s ease;
+}
+
+#hero-landing .btn-glass:hover {
+    background: rgba(0, 152, 234, 0.1);
+    box-shadow: 0 0 25px rgba(0, 152, 234, 0.15);
+    border-color: rgba(0, 152, 234, 0.5);
+}
+
+#hero-landing .btn-glass:hover .bracket {
+    border-color: #fff;
+}
+
+#hero-landing .btn-solid {
+    background: linear-gradient(135deg, #0098EA 0%, #0056D6 100%);
+    border: none;
+    color: white;
+    padding: 1.1rem 2.5rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.9rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 0 25px rgba(0, 152, 234, 0.3);
+    transition: all 0.3s ease;
+}
+
+#hero-landing .btn-solid::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.2) 0%, transparent 50%);
+    opacity: 0;
+    transition: opacity 0.3s;
+}
+
+#hero-landing .btn-solid:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 30px rgba(0, 152, 234, 0.5);
+}
+
+#hero-landing .btn-solid:hover::before {
+    opacity: 1;
+}
+
+/* Stats Row */
+#hero-landing .stats-row {
+    position: absolute;
+    bottom: 2.5rem;
+    left: 5rem;
+    right: 5rem;
+    display: flex;
+    gap: 1.5rem;
+    z-index: 10;
+}
+
+#hero-landing .stat-box {
+    flex: 1;
+    background: rgba(10, 15, 30, 0.3);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    padding: 1.25rem 1rem;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    transition: all 0.3s;
+}
+
+#hero-landing .stat-box:hover {
+    background: rgba(0, 152, 234, 0.05);
+    border-color: rgba(0, 152, 234, 0.2);
+}
+
+#hero-landing .stat-val {
+    font-family: 'Inter', sans-serif;
+    font-size: 1.75rem;
+    font-weight: 400;
+    color: #fff;
+    margin-bottom: 0.25rem;
+}
+
+#hero-landing .stat-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* Right Pane & HUD */
+#hero-landing .hud-overlay {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 50vw;
+    height: 100vh;
+    z-index: 20;
+    pointer-events: none;
+}
+
+#hero-landing .hud-label {
+    position: absolute;
+    background: rgba(5, 8, 15, 0.7);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(0, 152, 234, 0.15);
+    padding: 0.8rem 1.2rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    color: #8b949e;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    white-space: nowrap;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+    border-radius: 1px;
+}
+
+#hero-landing .hud-val {
+    color: #0098EA;
+    font-weight: 500;
+}
+
+#hero-landing .hud-val.up {
+    color: #00ea90;
+}
+
+#hero-landing #hud-1 {
+    top: 22%;
+    right: 28%;
+}
+
+#hero-landing #hud-2 {
+    top: 42%;
+    right: 12%;
+}
+
+#hero-landing #hud-3 {
+    top: 62%;
+    right: 35%;
+}
+
+#hero-landing #hud-4 {
+    top: 82%;
+    right: 18%;
+}
+
+/* Mobile responsiveness adjustments */
+@media (max-width: 1024px) {
+    #hero-landing .center-split {
+        display: none;
+    }
+
+    #hero-landing #webgl-container {
+        width: 100vw;
+        opacity: 0.3;
+    }
+
+    /* Flow particles to background */
+    #hero-landing .hud-overlay {
+        display: none;
+    }
+
+    #hero-landing .left-pane {
+        width: 100vw;
+        padding: 0 2rem;
+    }
+
+    #hero-landing .nav-overlay {
+        padding: 1.5rem 2rem;
+    }
+
+    #hero-landing .nav-center {
+        display: none;
+    }
+
+    #hero-landing .stats-row {
+        flex-wrap: wrap;
+        bottom: 1rem;
+        left: 2rem;
+        right: 2rem;
+        gap: 0.5rem;
+    }
+
+    #hero-landing .stat-box {
+        flex: 1 1 40%;
+        padding: 0.75rem;
+    }
+
+    #hero-landing .headline {
+        font-size: 3.5rem;
+    }
+}

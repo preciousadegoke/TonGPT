@@ -53,3 +53,4 @@ yarl==1.20.1
 tonsdk
 setproctitle
 psutil
+PyNaCl==1.5.0

@@ -36,8 +36,8 @@ class RateLimiter:
                 return await self._check_rate_limit_redis(user_id, window_start, limits, key)
         except Exception as e:
             logger.error(f"Rate limit check failed: {e}", exc_info=True)
-            # Allow request on error
-            return False, {"error": "Rate limiter unavailable"}
+            # Fail-closed: deny request on rate-limiter error
+            return True, {"error": "Rate limiter unavailable — request denied"}
     
     def _check_rate_limit_memory(self, user_id: int, window_start: int, limits: Dict, key: str) -> Tuple[bool, Dict[str, Any]]:
         """Check rate limit using in-memory cache"""

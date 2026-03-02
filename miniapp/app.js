@@ -60,6 +60,14 @@ class TonGPTApp {
                 buttonRootId: 'ton-connect-button'
             });
 
+            // Request ton_proof for wallet ownership verification
+            this.tonConnectUI.setConnectRequestParameters({
+                state: 'ready',
+                value: {
+                    tonProof: await this.fetchTonProofPayload()
+                }
+            });
+
             this.tonConnectUI.onStatusChange(wallet => this.handleWalletChange(wallet));
 
             // Check initial state
@@ -72,6 +80,18 @@ class TonGPTApp {
         }
     }
 
+    async fetchTonProofPayload() {
+        try {
+            const res = await fetch(`${CONFIG.API_BASE}/wallet/generate-payload`);
+            const data = await res.json();
+            return data.payload;
+        } catch (e) {
+            console.error('Failed to fetch ton_proof payload:', e);
+            // Fallback: use timestamp-based nonce (less secure but functional)
+            return `tonproof-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        }
+    }
+
     async handleWalletChange(wallet) {
         this.state.wallet = wallet;
         this.updateWalletUI();
@@ -79,7 +99,7 @@ class TonGPTApp {
         if (wallet) {
             this.triggerHaptic('light');
 
-            // Send proof to backend
+            // Send proof to backend for ownership verification
             try {
                 if (wallet.connectItems?.tonProof && wallet.connectItems.tonProof.proof) {
                     const proof = wallet.connectItems.tonProof.proof;
@@ -96,16 +116,9 @@ class TonGPTApp {
                     await this.apiCall('/wallet/auth', 'POST', payload);
                     this.showToast('Wallet Verified & Linked!', 'success');
                 } else {
-                    // Fallback for simple connection without proof (dev mode / non-standard wallets)
-                    const payload = {
-                        TelegramId: tg.initDataUnsafe?.user?.id || 0,
-                        Address: wallet.account.address,
-                        PublicKey: wallet.account.publicKey || '',
-                        Proof: "SKIP_VERIFICATION_DEV",
-                        StateInit: wallet.account.walletStateInit
-                    };
-                    await this.apiCall('/wallet/auth', 'POST', payload);
-                    this.showToast('Wallet Connected!', 'success');
+                    // No ton_proof available — wallet is view-only, NOT linked to profile
+                    console.warn('Wallet connected without ton_proof — not linked to profile');
+                    this.showToast('Wallet connected (view-only — reconnect to verify ownership)', 'info');
                 }
             } catch (e) {
                 console.error('Wallet Auth Failed:', e);

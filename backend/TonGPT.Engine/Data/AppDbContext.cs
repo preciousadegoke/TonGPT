@@ -25,6 +25,12 @@ namespace TonGPT.Engine.Data
 
             modelBuilder.Entity<ActivityLog>()
                 .HasIndex(a => a.TelegramId);
+
+            // Prevent duplicate payment records at the DB level (TOCTOU defense)
+            modelBuilder.Entity<Payment>()
+                .HasIndex(p => new { p.ExternalId, p.Provider })
+                .IsUnique()
+                .HasFilter("\"ExternalId\" IS NOT NULL");
         }
     }
 }

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using TonGPT.Engine.Data;
+using TonGPT.Engine.Middleware;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,8 +28,7 @@ if (app.Environment.IsDevelopment())
 }
 
 // app.UseHttpsRedirection();
-// app.UseHttpsRedirection();
-app.UseMiddleware<TonGPT.Engine.Middleware.ApiKeyMiddleware>();
+app.UseMiddleware<ApiKeyMiddleware>();
 app.UseAuthorization();
 
 app.MapControllers();

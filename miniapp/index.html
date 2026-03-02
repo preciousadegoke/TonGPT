@@ -11,12 +11,155 @@
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script src="https://unpkg.com/@tonconnect/ui@2.0.5/dist/tonconnect-ui.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Hero Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
     <!-- Custom Styles -->
     <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="hero.css">
 </head>
 
 <body class="bg-black text-white min-h-screen select-none">
+
+    <!-- TON GPT Hero Landing Overlay -->
+    <div id="hero-landing">
+        <!-- Light/Glow Accents -->
+        <div class="ambient-glow glow-1"></div>
+        <div class="ambient-glow glow-2"></div>
+
+        <!-- Math/Geo Background Layer -->
+        <canvas id="bg-canvas"></canvas>
+
+        <!-- Deep Web3 3D Particle Visual -->
+        <div id="webgl-container"></div>
+
+        <!-- Vector/Connector Lines Canvas -->
+        <canvas id="hud-canvas"></canvas>
+
+        <!-- Structural Divider -->
+        <div class="center-split"></div>
+
+        <!-- UI Overlay -->
+        <nav class="nav-overlay">
+            <div class="logo">
+                <div class="logo-icon">
+                    <div class="diamond-solid"></div>
+                    <div class="diamond-outline"></div>
+                </div>
+                <div class="logo-text">TonGPT</div>
+            </div>
+
+            <div class="nav-center">
+                <div class="nav-links">
+                    <div class="group-l">
+                        <a href="#">// Scan</a>
+                        <a href="#">// Trending</a>
+                    </div>
+                    <div class="group-r">
+                        <a href="#">// Whales</a>
+                        <a href="#">// Intelligence</a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nav-right">
+                <span class="lang-toggle">v EN</span>
+                <button class="btn-cta hero-launch-btn">Launch App</button>
+            </div>
+        </nav>
+
+        <div class="left-pane">
+            <div class="overline">// TON AI INTELLIGENCE LAYER</div>
+            <h1 class="headline">
+                <span class="w-med">See the Signal.</span><br>
+                <span class="w-light">Before the Market.</span>
+            </h1>
+            <p class="description">
+                TonGPT aggregates, filters, and analyzes millions of on-chain data points in real time. We monitor
+                critical wallet activities, memecoin velocity trajectories, STON.fi liquidity shifts, and institutional
+                influencer signals across the entire TON ecosystem.
+            </p>
+            <div class="actions">
+                <button class="btn-glass hero-launch-btn">
+                    <div class="bracket tl"></div>
+                    <div class="bracket tr"></div>
+                    <div class="bracket bl"></div>
+                    <div class="bracket br"></div>
+                    View Intelligence
+                </button>
+                <button class="btn-solid hero-launch-btn">Start Scanning</button>
+            </div>
+        </div>
+
+        <!-- Data Stats at Bottom Left -->
+        <div class="stats-row">
+            <div class="stat-box">
+                <div class="bracket tl"></div>
+                <div class="bracket tr"></div>
+                <div class="bracket bl"></div>
+                <div class="bracket br"></div>
+                <div class="stat-val">24/7</div>
+                <div class="stat-label">Monitoring</div>
+            </div>
+            <div class="stat-box">
+                <div class="bracket tl"></div>
+                <div class="bracket tr"></div>
+                <div class="bracket bl"></div>
+                <div class="bracket br"></div>
+                <div class="stat-val">10K+</div>
+                <div class="stat-label">Wallets Tracked</div>
+            </div>
+            <div class="stat-box">
+                <div class="bracket tl"></div>
+                <div class="bracket tr"></div>
+                <div class="bracket bl"></div>
+                <div class="bracket br"></div>
+                <div class="stat-val">&lt;1s</div>
+                <div class="stat-label">Signal Latency</div>
+            </div>
+            <div class="stat-box">
+                <div class="bracket tl"></div>
+                <div class="bracket tr"></div>
+                <div class="bracket bl"></div>
+                <div class="bracket br"></div>
+                <div class="stat-val">TON</div>
+                <div class="stat-label">Native Focus</div>
+            </div>
+        </div>
+
+        <!-- Floating HUD Elements over Right Pane -->
+        <div class="hud-overlay">
+            <div class="hud-label" id="hud-1">
+                <div class="bracket tl"></div>
+                <div class="bracket tr"></div>
+                <div class="bracket bl"></div>
+                <div class="bracket br"></div>
+                Whale Activity: <span class="hud-val">Rising</span>
+            </div>
+            <div class="hud-label" id="hud-2">
+                <div class="bracket tl"></div>
+                <div class="bracket tr"></div>
+                <div class="bracket bl"></div>
+                <div class="bracket br"></div>
+                STON.fi Flow: <span class="hud-val up">+12.4%</span>
+            </div>
+            <div class="hud-label" id="hud-3">
+                <div class="bracket tl"></div>
+                <div class="bracket tr"></div>
+                <div class="bracket bl"></div>
+                <div class="bracket br"></div>
+                Signal Confidence: <span class="hud-val">94%</span>
+            </div>
+            <div class="hud-label" id="hud-4">
+                <div class="bracket tl"></div>
+                <div class="bracket tr"></div>
+                <div class="bracket bl"></div>
+                <div class="bracket br"></div>
+                Memecoin Velocity: <span class="hud-val">High</span>
+            </div>
+        </div>
+    </div>
+
 
     <!-- Background Elements -->
     <div
@@ -85,6 +228,8 @@
 
     <!-- App Logic -->
     <script src="app.js"></script>
+    <!-- Hero Logic -->
+    <script src="hero.js"></script>
 </body>
 
 </html>

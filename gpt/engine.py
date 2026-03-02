@@ -4,7 +4,7 @@ import asyncio
 import logging
 import json
 from typing import Optional, List, Dict, Any
-from .prompts import SYSTEM_PROMPT, get_enhanced_context
+from .prompts import SYSTEM_PROMPT, get_enhanced_context, AI_RESPONSE_DISCLAIMER
 from utils.realtime_data import get_realtime_context
 
 # Configure logging
@@ -31,7 +31,7 @@ class GPTEngine:
             self.base_url = "https://api.openai.com/v1/chat/completions"
             self.model = "gpt-4" if "gpt-4" in model else "gpt-3.5-turbo"
             
-    async def generate_response(self, user_message: str, user_id: int = 0, context_override: str = None) -> str:
+    async def generate_response(self, user_message: str, user_id: int = 0, context_override: str = None, model_override: str = None) -> str:
         """
         Generate a response from GPT with full context awareness.
         
@@ -39,6 +39,7 @@ class GPTEngine:
             user_message: The user's input/question.
             user_id: User ID for conversation history (0 for stateless).
             context_override: Optional system prompt override.
+            model_override: Specify an exact model bypassing default settings.
             
         Returns:
             The AI's response text.
@@ -80,7 +81,7 @@ class GPTEngine:
                 headers["X-Title"] = "TonGPT Bot"
             
             payload = {
-                "model": self.model,
+                "model": model_override or self.model,
                 "messages": messages,
                 "temperature": 0.7,
                 "max_tokens": 1000,
@@ -109,6 +110,16 @@ class GPTEngine:
                         
                     answer = result["choices"][0]["message"]["content"].strip()
                     
+                    # AI Safety Middleware
+                    lower_answer = answer.lower()
+                    risky_phrases = ["guaranteed profit", "100x", "sure thing", "can't lose", "definitely go up", "will pump"]
+                    if any(phrase in lower_answer for phrase in risky_phrases):
+                        answer = "⚠️ **AI Safety Notice:** This response originally contained deterministic financial language and has been flagged. Cryptocurrency markets are highly volatile.\n\n" + answer
+                        logger.warning(f"AI Safety filter triggered for user {user_id}")
+                    
+                    # Append compliance disclaimer to every AI response
+                    answer = answer.rstrip() + AI_RESPONSE_DISCLAIMER
+
                     # 5. Update History
                     if user_id != 0:
                         self.conversation_history[user_id].extend([
@@ -148,13 +159,13 @@ def get_engine() -> GPTEngine:
     return _engine_instance
 
 # Backward compatibility wrapper
-async def ask_gpt(prompt: str, model: str = None, context: str = None) -> str:
+async def ask_gpt(prompt: str, model: str = None, context: str = None, user_id: int = 0) -> str:
     """Legacy wrapper for backward compatibility"""
     engine = get_engine()
     # Check if we need to temporarily update model/context only for this call? 
     # For simplicity, we just use the robust engine as is, ignoring model unless critcal.
     # The new engine handles context dynamically.
-    return await engine.generate_response(prompt, user_id=0, context_override=context)
+    return await engine.generate_response(prompt, user_id=user_id, context_override=context, model_override=model)
 
 async def test_gpt_connection() -> bool:
     """Test connection"""

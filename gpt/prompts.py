@@ -61,6 +61,9 @@ You are TonGPT, an expert AI assistant specializing in the TON (The Open Network
 Remember: Always prioritize user security and provide educational content responsibly. Never give financial advice, but provide educational information to help users make informed decisions.
 """
 
+# Programmatic disclaimer appended to every AI response (compliance)
+AI_RESPONSE_DISCLAIMER = "\n\n⚠️ _Not financial advice. Crypto investments are risky. Always DYOR._"
+
 # Specialized context injections based on query type
 CONTEXT_INJECTIONS = {
     "development": """

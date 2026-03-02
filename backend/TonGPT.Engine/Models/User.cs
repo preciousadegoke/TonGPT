@@ -8,6 +8,7 @@ namespace TonGPT.Engine.Models
         Free,
         Starter,
         Pro,
+        ProPlus,
         Elite
     }
 

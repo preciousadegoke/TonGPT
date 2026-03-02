@@ -73,6 +73,21 @@ async def on_startup():
             gpt_handler = services.get('gpt_handler')
             X_monitor = services.get('X_monitor') 
             
+            # Initialize AdvancedRateLimiter so GPT/handlers can use create_rate_limit_decorator("ai_queries")
+            try:
+                from core.rate_limiting import get_rate_limiter
+                get_rate_limiter(redis_client)
+            except Exception as e:
+                logger.warning("⚠ Rate limiter (advanced) not initialized: %s", e)
+            
+            # Start monitoring loop (Prometheus/metrics collection)
+            try:
+                from core.monitoring import monitoring_loop
+                asyncio.create_task(monitoring_loop(60))
+                logger.info("📊 Monitoring loop started (60s interval)")
+            except Exception as e:
+                logger.warning("⚠ Monitoring loop not started: %s", e)
+            
             # Register handlers after services are initialized
             logger.info("🔗 Registering handlers...")
             await register_all_handlers()
@@ -87,8 +102,8 @@ async def on_startup():
             except Exception as e:
                 logger.warning(f"⚠️ Redis status update failed: {e}")
             
-            logger.info("🤖 TonGPT is now running with enhanced capabilities!")
-            logger.info(f"🌐 Mini-App available at: http://localhost:{config.get('MINIAPP_PORT', 8000)}")
+            logger.info("[Bot] TonGPT is now running with enhanced capabilities!")
+            logger.info(f"[Web] Mini-App available at: http://localhost:{config.get('MINIAPP_PORT', 8000)}")
             return
             
         except asyncio.TimeoutError:

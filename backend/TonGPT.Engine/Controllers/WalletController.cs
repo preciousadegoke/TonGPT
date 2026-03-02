@@ -31,12 +31,16 @@ namespace TonGPT.Engine.Controllers
         [HttpPost("auth")]
         public async Task<IActionResult> AuthenticateWallet([FromBody] WalletAuthDto authDto)
         {
-            _logger.LogInformation($"Authenticating wallet {authDto.Address} for user {authDto.TelegramId}");
+            var redactedAddress = authDto.Address.Length > 10 ? $"{authDto.Address.Substring(0, 6)}...{authDto.Address.Substring(authDto.Address.Length - 4)}" : "***";
+            _logger.LogInformation($"Authenticating wallet {redactedAddress} for user {authDto.TelegramId}");
 
-            // TODO: Implement actual TON Connect signature verification here.
-            // This requires verifying the 'ton_proof' against the public key and standard TON prefix.
-            // For Phase 2 Goal (Subscription integration), we trust the client-side proof generation for now
-            // but MUST implement this before Mainnet production.
+            // Only accept proofs that have been verified by the Python server.
+            // Direct client calls with raw ton_proof payloads are rejected.
+            if (authDto.Proof != "VERIFIED_BY_PYTHON_SERVER")
+            {
+                _logger.LogWarning($"Rejected unverified proof from user {authDto.TelegramId}");
+                return StatusCode(403, new { message = "Wallet proof must be verified by the API server first." });
+            }
 
             var user = await _context.Users.FirstOrDefaultAsync(u => u.TelegramId == authDto.TelegramId.ToString());
 
@@ -45,8 +49,25 @@ namespace TonGPT.Engine.Controllers
                 return NotFound(new { message = "User not found. Please start the bot first." });
             }
 
+            // Check if this wallet is already linked to a different user
+            var existingOwner = await _context.Users.FirstOrDefaultAsync(u =>
+                u.WalletAddress == authDto.Address && u.TelegramId != authDto.TelegramId.ToString());
+            if (existingOwner != null)
+            {
+                _logger.LogWarning($"Wallet {redactedAddress} already linked to user {existingOwner.TelegramId}");
+                return Conflict(new { message = "This wallet is already linked to another account." });
+            }
+
             // Update user with wallet address
             user.WalletAddress = authDto.Address;
+            _context.ActivityLogs.Add(new ActivityLog
+            {
+                TelegramId = authDto.TelegramId.ToString(),
+                Action = "wallet_linked",
+                Metadata = System.Text.Json.JsonSerializer.Serialize(new { Address = redactedAddress }),
+                Success = true,
+                Timestamp = DateTime.UtcNow
+            });
             await _context.SaveChangesAsync();
 
             return Ok(new

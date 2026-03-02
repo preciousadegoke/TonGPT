@@ -23,6 +23,14 @@ class AdvancedRateLimiter:
     def __init__(self, redis_client):
         self.redis = redis_client
         
+        # Load risk thresholds
+        try:
+            from core.config import load_config
+            cfg = load_config()
+            self.free_lifetime_cap = cfg.get("FREE_USER_LIFETIME_AI_QUERIES", 50)
+        except Exception:
+            self.free_lifetime_cap = 50
+        
         # Define rate limits per subscription tier
         self.rate_limits = {
             "free": {
@@ -71,6 +79,18 @@ class AdvancedRateLimiter:
             
             current_time = int(time.time())
             
+            # Lifetime checking for free tier AI queries
+            if endpoint == "ai_queries" and tier == "free":
+                lifetime_key = f"lifetime_ai_queries:{user_id}"
+                lifetime_count = int(self.redis.get(lifetime_key) or 0)
+                if lifetime_count >= self.free_lifetime_cap:
+                    return RateLimitResult(
+                        allowed=False, 
+                        remaining=0, 
+                        reset_time=current_time + 86400,
+                        retry_after=None  # Upgrade required
+                    )
+            
             # Check multiple windows: minute, hour, and burst
             checks = [
                 ("minute", endpoint_limit.requests_per_minute, 60),
@@ -103,8 +123,8 @@ class AdvancedRateLimiter:
             
         except Exception as e:
             logger.error(f"Rate limiting error: {e}")
-            # Fail open - allow request if rate limiter fails
-            return RateLimitResult(allowed=True, remaining=100, reset_time=current_time + 3600)
+            # Fail closed - deny request if rate limiter fails
+            return RateLimitResult(allowed=False, remaining=0, reset_time=int(time.time()) + 60, retry_after=60)
     
     async def _check_window(self, user_id: int, endpoint: str, window_type: str, limit: int, window_seconds: int, current_time: int) -> RateLimitResult:
         """Check rate limit for specific time window"""
@@ -146,6 +166,21 @@ class AdvancedRateLimiter:
             "api_calls": 200   # Max 200 API calls per hour per IP
         }
         
+        # Burst tracking for IP
+        burst_key = f"ip_burst:{ip_address}:10m"
+        pipe = self.redis.pipeline()
+        pipe.incr(burst_key)
+        pipe.expire(burst_key, 600)  # 10 minutes
+        burst_count = pipe.execute()[0]
+        
+        if burst_count > 60:  # >60 requests in 10 mins from same IP
+            return RateLimitResult(
+                allowed=False,
+                remaining=0,
+                reset_time=current_time + 600,
+                retry_after=600
+            )
+        
         limit = ip_limits.get(endpoint, 100)  # Default limit
         key = f"ip_rate_limit:{ip_address}:{endpoint}:hour"
         window_start = current_time - 3600  # 1 hour window
@@ -182,6 +217,10 @@ class AdvancedRateLimiter:
             key = f"rate_limit:{user_id}:{endpoint}:{window_type}"
             pipe.zadd(key, {str(current_time): current_time})
             pipe.expire(key, window_seconds)
+            
+        if endpoint == "ai_queries":
+            lifetime_key = f"lifetime_ai_queries:{user_id}"
+            pipe.incr(lifetime_key)
         
         pipe.execute()
     
@@ -246,6 +285,65 @@ class AdvancedRateLimiter:
         key = f"rate_limit_exempt:{user_id}:{endpoint}"
         return bool(self.redis.get(key))
 
+    async def get_user_risk_score(self, user_id: int, tier: str = "free", ip_address: str = None) -> Tuple[int, str]:
+        """Calculate unified risk score and return (score, tier_name)"""
+        try:
+            # 1. Identity Risk
+            identity_risk = 0
+            history_key = f"user_history:{user_id}"
+            has_history = self.redis.exists(history_key)
+            if not has_history:
+                identity_risk += 20
+                
+            # 2. Behavior Risk
+            behavior_risk = 0
+            ai_key = f"rate_limit:{user_id}:ai_queries:hour"
+            other_key = f"rate_limit:{user_id}:api_calls:hour"
+            
+            ai_count = self.redis.zcard(ai_key)
+            other_count = self.redis.zcard(other_key)
+            
+            if ai_count > 10 and other_count == 0:
+                behavior_risk += 35
+                
+            minute_ai_key = f"rate_limit:{user_id}:ai_queries:minute"
+            if self.redis.zcard(minute_ai_key) > 3:
+                behavior_risk += 20
+                
+            # 3. IP Risk
+            ip_risk = 0
+            if ip_address:
+                ip_hour_key = f"ip_rate_limit:{ip_address}:ai_queries:hour"
+                if self.redis.zcard(ip_hour_key) > 20:
+                    ip_risk += 40
+                burst_key = f"ip_burst:{ip_address}:10m"
+                if int(self.redis.get(burst_key) or 0) > 40:
+                    ip_risk += 30
+                    
+            # 4. Economic Risk
+            economic_risk = 0
+            if tier == "free":
+                lifetime_key = f"lifetime_ai_queries:{user_id}"
+                lifetime_count = int(self.redis.get(lifetime_key) or 0)
+                if lifetime_count > self.free_lifetime_cap * 0.8:
+                    economic_risk += 30
+            
+            total_risk = min(100, int(identity_risk * 0.25 + behavior_risk * 0.45 + ip_risk * 0.20 + economic_risk * 0.10))
+            
+            if total_risk < 30:
+                tier_name = "Trusted"
+            elif total_risk < 60:
+                tier_name = "Watch"
+            elif total_risk < 80:
+                tier_name = "Suspicious"
+            else:
+                tier_name = "High Risk"
+                
+            return total_risk, tier_name
+        except Exception as e:
+            logger.error(f"Error calculating risk score: {e}")
+            return 0, "Trusted"
+
 class RateLimitMiddleware:
     """Middleware for automatic rate limiting in handlers"""
     
@@ -258,18 +356,32 @@ class RateLimitMiddleware:
         Check rate limit and return (allowed, error_message)
         """
         try:
-            # Get user tier
+            # Get user tier (from subscription_manager or engine)
             tier = "free"
             if self.subscription_manager:
                 subscription = await self.subscription_manager.get_user_subscription(user_id)
                 if subscription:
                     tier = subscription.tier
+            else:
+                try:
+                    from services.engine_client import engine_client
+                    status = await engine_client.get_user_status(str(user_id))
+                    tier = (status.get("plan") or "Free").lower()
+                except Exception:
+                    pass
             
-            # Get IP address if available
-            ip_address = None
-            if message and hasattr(message, 'from_user'):
-                # In production, extract real IP from headers
-                ip_address = "127.0.0.1"  # Placeholder
+            # IP only when available (webhook/miniapp). Bot messages have no HTTP IP.
+            ip_address = getattr(message, "_ip_address", None) if message else None
+            
+            # Check terms acceptance (version-aware)
+            CURRENT_TOS_VERSION = "1.0"
+            if getattr(self.rate_limiter.redis, "client", self.rate_limiter.redis):
+                redis_instance = getattr(self.rate_limiter.redis, "client", self.rate_limiter.redis)
+                accepted_version = redis_instance.get(f"terms_accepted:{user_id}")
+                if isinstance(accepted_version, bytes):
+                    accepted_version = accepted_version.decode()
+                if accepted_version != CURRENT_TOS_VERSION and endpoint not in ["terms", "start", "accept_terms"]:
+                    return False, "⚠️ <b>Action Required</b>\n\nYou must accept our Terms of Service and Privacy Policy before using TonGPT.\n\nPlease use /accept_terms to continue."
             
             # Check if exempt
             if await self.rate_limiter.is_rate_limit_exempt(user_id, endpoint):
@@ -301,8 +413,8 @@ class RateLimitMiddleware:
             
         except Exception as e:
             logger.error(f"Rate limit middleware error: {e}")
-            # Fail open
-            return True, ""
+            # Fail closed
+            return False, "⚠️ Service temporarily unavailable due to internal error."
 
 # Global rate limiter instance
 _rate_limiter = None
@@ -320,25 +432,48 @@ def create_rate_limit_decorator(endpoint: str):
         async def wrapper(message, *args, **kwargs):
             # Get rate limiter
             rate_limiter = get_rate_limiter()
-            if not rate_limiter:
+            if not rate_limiter or not getattr(rate_limiter.redis, "client", None):
                 return await func(message, *args, **kwargs)
             
             # Create middleware
             middleware = RateLimitMiddleware(rate_limiter)
+            user_id = message.from_user.id
             
-            # Check rate limit
-            allowed, error_msg = await middleware.check_and_consume(
-                message.from_user.id, 
-                endpoint, 
-                message
-            )
+            # --- Global Concurrency Cap ---
+            rc = getattr(rate_limiter.redis, "client", rate_limiter.redis)
+            concurrency_key = f"active_req:{user_id}:{endpoint}"
+            try:
+                current_active = rc.incr(concurrency_key)
+                if current_active == 1:
+                    rc.expire(concurrency_key, 300) # Fail-safe TTL to clear stuck connections
+                    
+                if current_active > 2: # Max 2 concurrent GPT processing per user
+                    rc.decr(concurrency_key)
+                    await message.reply("⏳ Please wait for your previous request to finish processing.", parse_mode="HTML")
+                    return
+            except Exception as e:
+                logger.debug(f"Concurrency track error: {e}")
+            # ------------------------------
             
-            if not allowed:
-                await message.reply(error_msg, parse_mode="HTML")
-                return
-            
-            # Proceed with original function
-            return await func(message, *args, **kwargs)
+            try:
+                # Check rate limit
+                allowed, error_msg = await middleware.check_and_consume(
+                    user_id, 
+                    endpoint, 
+                    message
+                )
+                
+                if not allowed:
+                    await message.reply(error_msg, parse_mode="HTML")
+                    return
+                
+                # Proceed with original function
+                return await func(message, *args, **kwargs)
+            finally:
+                try:
+                    rc.decr(concurrency_key)
+                except Exception:
+                    pass
         
         return wrapper
     return decorator

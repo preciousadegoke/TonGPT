@@ -9,8 +9,8 @@ logger = logging.getLogger(__name__)
 # Create router for this module
 router = Router()
 
-async def handle_gpt_query(message: types.Message):
-    """Handle GPT queries from users with comprehensive error handling"""
+async def _handle_gpt_query_impl(message: types.Message):
+    """Handle GPT queries from users with comprehensive error handling (inner impl for rate-limit decorator)."""
     try:
         # Handle both /ask command and general messages
         if message.text.startswith('/ask'):
@@ -27,13 +27,40 @@ async def handle_gpt_query(message: types.Message):
         except Exception as e:
             logger.warning(f"Failed to send chat action: {e}")
         
+        # Risk Scoring and Model Downgrading
+        model_override = None
+        user_id = message.from_user.id
+        
+        try:
+            from core.rate_limiting import get_rate_limiter
+            limiter = get_rate_limiter()
+            if limiter:
+                ip_address = getattr(message, "_ip_address", None)
+                tier = "free"
+                try:
+                    from services.engine_client import engine_client
+                    status = await engine_client.get_user_status(str(user_id))
+                    tier = (status.get("plan") or "Free").lower()
+                except Exception:
+                    pass
+                    
+                risk_score, risk_tier = await limiter.get_user_risk_score(user_id, tier, ip_address)
+                
+                if risk_tier == "High Risk":
+                    await message.reply("⚠️ Your account is temporarily restricted due to suspicious activity. Please verify your account.")
+                    logger.warning(f"BLOCKED High Risk user {user_id} (Score: {risk_score})")
+                    return
+                elif risk_tier == "Suspicious":
+                    model_override = "openai/gpt-4o-mini"
+                    logger.warning(f"DOWNGRADED Suspicious user {user_id} (Score: {risk_score}) to {model_override}")
+                elif risk_tier == "Watch":
+                    logger.info(f"WATCH user {user_id} (Score: {risk_score}) active.")
+        except Exception as e:
+            logger.debug(f"Risk evaluation skipped: {e}")
+
         # Get response from GPT with timeout
         try:
-            response = await ask_gpt(question)
-        except TimeoutError:
-            await message.reply("⏱️ Request timed out. Please try again.")
-            logger.error(f"GPT request timeout for user {message.from_user.id}")
-            return
+            response = await ask_gpt(question, model=model_override, user_id=user_id)
         except Exception as e:
             await message.reply("🚫 Error processing your request. Please try again later.")
             logger.error(f"GPT request error for user {message.from_user.id}: {e}", exc_info=True)
@@ -63,6 +90,18 @@ async def handle_gpt_query(message: types.Message):
         except Exception as send_error:
             logger.error(f"Failed to send error message: {send_error}")
         await message.reply("❌ Error processing your request. Please try again.")
+
+# Apply AdvancedRateLimiter via decorator when available (Guardrail 4: rate limit GPT endpoints)
+def _wrap_with_rate_limit(handler):
+    try:
+        from core.rate_limiting import create_rate_limit_decorator, get_rate_limiter
+        if get_rate_limiter():
+            return create_rate_limit_decorator("ai_queries")(handler)
+    except Exception as e:
+        logger.debug("Rate limit decorator not applied: %s", e)
+    return handler
+
+handle_gpt_query = _wrap_with_rate_limit(_handle_gpt_query_impl)
 
 # Register command handler
 @router.message(Command("ask"))

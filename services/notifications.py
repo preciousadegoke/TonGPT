@@ -66,6 +66,27 @@ class NotificationService:
         # Initialize database for user preferences and notifications
         self.init_database()
     
+    def cleanup_old_notifications(self, days: int = 30):
+        """Delete notification history older than specified days for GDPR compliance"""
+        try:
+            conn = sqlite3.connect('notifications.db')
+            cursor = conn.cursor()
+            
+            cursor.execute(f'''
+                DELETE FROM notification_history 
+                WHERE sent_at < date('now', '-{days} days')
+            ''')
+            
+            conn.commit()
+            rows_deleted = cursor.rowcount
+            conn.close()
+            
+            if rows_deleted > 0:
+                logger.info(f"Cleaned up {rows_deleted} old notification records")
+            
+        except Exception as e:
+            logger.error(f"Failed to cleanup old notifications: {e}")
+
     def init_database(self):
         """Initialize SQLite database for notification settings"""
         try:
@@ -108,6 +129,9 @@ class NotificationService:
             conn.commit()
             conn.close()
             logger.info("Database initialized successfully")
+            
+            # Run cleanup on init
+            self.cleanup_old_notifications()
             
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
@@ -672,6 +696,17 @@ async def main():
     
     # Send test alert (replace with actual user ID for real testing)
     # await send_wallet_alert(test_user_id, sample_transaction)
+
+
+async def notify_followers(address: str, tx: Dict) -> None:
+    """Notify users following this wallet about a transaction. Delegates to blockchain module."""
+    try:
+        from services.blockchain import format_transaction_for_notification, notify_followers as _notify
+        formatted = format_transaction_for_notification(tx)
+        await _notify(address, formatted)
+    except Exception as e:
+        logger.warning("notify_followers: %s", e)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

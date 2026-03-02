@@ -2,6 +2,7 @@ import os
 import hmac
 import hashlib
 import secrets
+import time
 from typing import Dict, Any, Optional
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -22,9 +23,14 @@ class SecurityManager:
         if key_env:
             return key_env.encode()
         
-        # Generate new key for development
-        password = os.getenv("MASTER_PASSWORD", "development_key").encode()
-        salt = os.getenv("ENCRYPTION_SALT", "default_salt").encode()
+        # Generate key from master password — MUST be set in production
+        password = os.getenv("MASTER_PASSWORD")
+        salt = os.getenv("ENCRYPTION_SALT")
+        if not password or not salt:
+            logger.critical("MASTER_PASSWORD and ENCRYPTION_SALT must be set for encryption!")
+            raise ValueError("Missing MASTER_PASSWORD or ENCRYPTION_SALT environment variable")
+        password = password.encode()
+        salt = salt.encode()
         
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
@@ -77,8 +83,11 @@ class SecurityManager:
         timestamp = str(int(time.time()))
         data = f"{user_id}:{amount}:{tier}:{timestamp}"
         
+        payment_secret = os.getenv("PAYMENT_SECRET")
+        if not payment_secret:
+            raise ValueError("PAYMENT_SECRET environment variable must be set")
         token = hmac.new(
-            os.getenv("PAYMENT_SECRET", "default_secret").encode(),
+            payment_secret.encode(),
             data.encode(),
             hashlib.sha256
         ).hexdigest()
@@ -91,13 +100,15 @@ class SecurityManager:
             timestamp, expected_token = token.split(':', 1)
             
             # Check if token is not too old (1 hour max)
-            import time
             if int(time.time()) - int(timestamp) > 3600:
                 return False
             
+            payment_secret = os.getenv("PAYMENT_SECRET")
+            if not payment_secret:
+                raise ValueError("PAYMENT_SECRET environment variable must be set")
             data = f"{user_id}:{amount}:{tier}:{timestamp}"
             actual_token = hmac.new(
-                os.getenv("PAYMENT_SECRET", "default_secret").encode(),
+                payment_secret.encode(),
                 data.encode(),
                 hashlib.sha256
             ).hexdigest()

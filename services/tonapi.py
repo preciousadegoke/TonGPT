@@ -34,27 +34,62 @@ class EnhancedTONAPIClient:
             self.headers['Authorization'] = f'Bearer {self.api_key}'
         
         self.session = requests.Session()
-        self.session.headers.update(self.headers)
-        
-        # Whale transaction thresholds (in TON)
         self.whale_thresholds = {
             'small_whale': 1000,    # 1K TON
             'medium_whale': 10000,  # 10K TON
             'large_whale': 100000,  # 100K TON
             'mega_whale': 1000000   # 1M TON
         }
+        
+    def _request_with_backoff(self, url: str, params: dict = None, user_id: int = None, max_retries: int = 3) -> requests.Response:
+        """Internal method to execute requests with exponential backoff and user quotas"""
+        import time
+        
+        # 1. User Quota Guard
+        if user_id:
+            try:
+                from utils.redis_conn import redis_client
+                rc = getattr(redis_client, "client", redis_client)
+                if rc:
+                    quota_key = f"tonapi_quota:{user_id}"
+                    count = rc.incr(quota_key)
+                    if count == 1:
+                        rc.expire(quota_key, 3600) # 1 hour TTL
+                    if count > 100: # Max 100 requests per hour per user
+                        logger.warning(f"TON API user quota exceeded for {user_id}")
+                        raise Exception("TON API global quota exceeded. Please try again later.")
+            except Exception as e:
+                # Fail open if redis is broken so we don't crash
+                if str(e).startswith("TON API global quota"): raise
+        
+        # 2. Exponential Backoff Circuit Breaker
+        base_delay = 1.0
+        for attempt in range(max_retries):
+            response = self.session.get(url, params=params, timeout=10)
+            if response.status_code == 429: # Rate Limited by TON API
+                if attempt == max_retries - 1:
+                    logger.error("TON API circuit breaker: Max retries exhausted on 429.")
+                    response.raise_for_status()
+                
+                delay = base_delay * (2 ** attempt)
+                logger.warning(f"TON API rate limit hit (429). Backing off for {delay}s...")
+                time.sleep(delay)
+            else:
+                response.raise_for_status()
+                return response
+                
+        raise Exception("TON API request failed unexpectedly")
     
     # ============ BASIC WALLET FUNCTIONS (Your original functions enhanced) ============
     
-    def get_wallet_info(self, address: str) -> dict:
+    def get_wallet_info(self, address: str, user_id: int = None) -> dict:
         """
         Get basic wallet info like balance and account state.
         Enhanced version of your original function.
         """
         try:
             url = f"{self.base_url}/accounts/{address}"
-            response = self.session.get(url, timeout=10)
-            response.raise_for_status()
+            response = self._request_with_backoff(url, user_id=user_id)
             
             data = response.json()
             
@@ -75,15 +110,14 @@ class EnhancedTONAPIClient:
             logger.error(f"Error fetching wallet info for {address}: {e}")
             raise
     
-    def get_jettons(self, address: str) -> dict:
+    def get_jettons(self, address: str, user_id: int = None) -> dict:
         """
         Fetch jettons (tokens) owned by a wallet.
         Enhanced version of your original function.
         """
         try:
             url = f"{self.base_url}/accounts/{address}/jettons"
-            response = self.session.get(url, timeout=10)
-            response.raise_for_status()
+            response = self._request_with_backoff(url, user_id=user_id)
             
             data = response.json()
             
@@ -102,7 +136,7 @@ class EnhancedTONAPIClient:
             logger.error(f"Error fetching jettons for {address}: {e}")
             raise
     
-    def get_transactions(self, address: str, limit: int = 10) -> dict:
+    def get_transactions(self, address: str, limit: int = 10, user_id: int = None) -> dict:
         """
         Get recent transactions from a wallet address.
         Enhanced version of your original function.
@@ -110,8 +144,7 @@ class EnhancedTONAPIClient:
         try:
             url = f"{self.base_url}/accounts/{address}/transactions"
             params = {'limit': limit}
-            response = self.session.get(url, params=params, timeout=10)
-            response.raise_for_status()
+            response = self._request_with_backoff(url, params=params, user_id=user_id)
             
             data = response.json()
             
@@ -422,21 +455,21 @@ class EnhancedTONAPIClient:
 ton_client = EnhancedTONAPIClient()
 
 # ============ BACKWARD COMPATIBILITY FUNCTIONS (Your original API) ============
-def get_wallet_info(address: str) -> dict:
+def get_wallet_info(address: str, user_id: int = None) -> dict:
     """Your original function - now enhanced"""
-    return ton_client.get_wallet_info(address)
+    return ton_client.get_wallet_info(address, user_id)
 
-def get_jettons(address: str) -> dict:
+def get_jettons(address: str, user_id: int = None) -> dict:
     """Your original function - now enhanced"""
-    return ton_client.get_jettons(address)
+    return ton_client.get_jettons(address, user_id)
 
-def get_transactions(address: str, limit: int = 10) -> dict:
+def get_transactions(address: str, limit: int = 10, user_id: int = None) -> dict:
     """Your original function - now enhanced"""
-    return ton_client.get_transactions(address, limit)
+    return ton_client.get_transactions(address, limit, user_id)
 
-def get_wallet_transactions(address: str, limit: int = 10) -> dict:
+def get_wallet_transactions(address: str, limit: int = 10, user_id: int = None) -> dict:
     """Alias for get_transactions for backward compatibility"""
-    return get_transactions(address, limit)
+    return get_transactions(address, limit, user_id)
 
 def resolve_dns(domain: str) -> dict:
     """Your original function - unchanged"""

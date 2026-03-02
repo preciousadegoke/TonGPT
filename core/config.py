@@ -32,9 +32,18 @@ def load_config() -> Dict[str, Any]:
     MINIAPP_PORT = int(os.getenv("MINIAPP_PORT", 8000))
     MINIAPP_HOST = os.getenv("MINIAPP_HOST", "0.0.0.0")
     
-    # Subscription system configuration
-    WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default_webhook_secret")
+    # Subscription system configuration — no default in production
+    WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+    if not WEBHOOK_SECRET and os.getenv("ENVIRONMENT", "development").lower() == "production":
+        logger.critical("WEBHOOK_SECRET must be set in production")
+        raise ValueError("WEBHOOK_SECRET is required in production")
+    WEBHOOK_SECRET = WEBHOOK_SECRET or ""
     
+    # Anti-Bot & Economic Guardrails
+    FREE_USER_LIFETIME_AI_QUERIES = int(os.getenv("FREE_USER_LIFETIME_AI_QUERIES", 50))
+    GPT_DAILY_SPEND_LIMIT = float(os.getenv("GPT_DAILY_SPEND_LIMIT", 10.0))
+    CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "*").split(",")
+
     return {
         "BOT_TOKEN": BOT_TOKEN,
         "PAYMENT_TOKEN": PAYMENT_TOKEN,
@@ -53,6 +62,9 @@ def load_config() -> Dict[str, Any]:
         "MINIAPP_PORT": MINIAPP_PORT,
         "MINIAPP_HOST": MINIAPP_HOST,
         "WEBHOOK_SECRET": WEBHOOK_SECRET,
+        "FREE_USER_LIFETIME_AI_QUERIES": FREE_USER_LIFETIME_AI_QUERIES,
+        "GPT_DAILY_SPEND_LIMIT": GPT_DAILY_SPEND_LIMIT,
+        "CORS_ALLOWED_ORIGINS": CORS_ALLOWED_ORIGINS,
     }
 
 def validate_config(config: Dict[str, Any]) -> bool:
