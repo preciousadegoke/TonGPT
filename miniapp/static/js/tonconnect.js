@@ -102,9 +102,14 @@ class TonConnectManager {
         }
     }
 
-    async sendTransaction(amount, message = '') {
+    async sendTransaction(amount, message = '', recipientAddress = null) {
         if (!this.wallet || !this.wallet.account) {
             showNotification('Please connect your wallet first', 'error');
+            return false;
+        }
+
+        if (!recipientAddress) {
+            showNotification('Missing payment recipient address', 'error');
             return false;
         }
 
@@ -113,7 +118,7 @@ class TonConnectManager {
                 validUntil: Math.floor(Date.now() / 1000) + 60,
                 messages: [
                     {
-                        address: CONFIG.TON_CONNECT.RECIPIENT_ADDRESS,
+                        address: recipientAddress,
                         amount: (amount * 1000000000).toString(), // Convert to nanotons
                         payload: message
                     }

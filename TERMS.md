@@ -73,7 +73,7 @@ You agree to indemnify and hold harmless the Service operator and its affiliates
 
 ## 11. Governing law and disputes
 
-These terms are governed by the laws of [Jurisdiction — to be specified by operator], without regard to conflict of law principles. Any dispute shall be resolved in the courts of that jurisdiction, unless otherwise required by mandatory consumer protection law in your country.
+These terms are governed by the laws of the Republic of Estonia, without regard to conflict of law principles. Any dispute shall be resolved in the courts of that jurisdiction, unless otherwise required by mandatory consumer protection law in your country.
 
 ## 12. Changes
 

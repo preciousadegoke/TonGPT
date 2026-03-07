@@ -9,8 +9,18 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 import logging
+import struct
 
 logger = logging.getLogger(__name__)
+
+
+def crc16(data: bytes) -> int:
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
+    return crc
 
 class SecurityManager:
     def __init__(self):
@@ -159,21 +169,22 @@ class SecurityManager:
         return f"rate_limit:{user_id}:{endpoint}"
     
     def validate_ton_address(self, address: str) -> bool:
-        """Validate TON wallet address format"""
+        """Validate TON wallet address format using CRC16 checksum."""
         if not address:
             return False
-        
-        # Basic TON address validation
-        if address.startswith(('EQ', 'UQ', 'kQ')):
-            # Remove prefix and check base64
-            try:
-                addr_without_prefix = address[2:]
-                base64.b64decode(addr_without_prefix + "==")  # Add padding
-                return len(addr_without_prefix) >= 44
-            except:
-                return False
-        
-        return False
+
+        b64 = address.replace("-", "+").replace("_", "/")
+        pad = 4 - len(b64) % 4
+        if pad != 4:
+            b64 += "=" * pad
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:
+            return False
+        if len(raw) != 36:
+            return False
+        expected = struct.unpack(">H", raw[34:])[0]
+        return crc16(raw[:34]) == expected
 
 # Global security manager instance
 security_manager = SecurityManager()

@@ -3,16 +3,63 @@ from aiogram.filters import Command
 from aiogram.types import LabeledPrice, PreCheckoutQuery, Message
 import logging
 import os
-import logging
-import os
+import hashlib
 from services.engine_client import engine_client
 from utils.redis_conn import redis_client
+from services.tonapi import get_ton_price_usd
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 # Payment configuration
 PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
+
+PLAN_PRICES_USD = {
+    "basic": 9.99,
+    "pro": 19.99,
+    "enterprise": 49.99,
+}
+
+
+async def validate_payment_amount(
+    invoice_payload: str, total_amount: int, currency: str
+) -> str:
+    plan_key = invoice_payload
+    if plan_key not in PLAN_PRICES_USD:
+        raise ValueError(f"Unknown plan: {plan_key}")
+
+    expected_usd = PLAN_PRICES_USD[plan_key]
+
+    if currency == "XTR":
+        paid_usd = total_amount * 0.013
+    elif currency == "TON":
+        ton_price = await get_ton_price_usd()
+        paid_usd = total_amount * ton_price
+    else:
+        raise ValueError(f"Unsupported currency: {currency}")
+
+    if paid_usd < expected_usd * 0.95:   # 5% tolerance
+        raise ValueError(
+            f"Underpayment: paid ${paid_usd:.2f}, expected ${expected_usd:.2f}"
+        )
+    return plan_key
+
+
+async def activate_payment_idempotent(
+    user_id: int, charge_id: str, plan_key: str
+):
+    key = f"payment_activated:{hashlib.sha256(charge_id.encode()).hexdigest()}"
+    claimed = redis_client.set(key, "1", ex=86400) if redis_client else None
+    if not claimed:
+        return  # Duplicate webhook — skip silently
+    payment_id = await engine_client.record_payment(
+        str(user_id), plan_key, "telegram_stars", external_id=charge_id
+    )
+    if not payment_id:
+        logger.error(f"Payment recording failed for user {user_id} plan {plan_key} — skipping activation")
+        return
+    await engine_client.log_activity(user_id, "payment_completed", {"plan": plan_key, "provider": "telegram_stars"})
+    await activate_premium_plan(user_id, plan_key, PLANS.get(plan_key, {}), payment_record_id=payment_id)
 
 # Plan configurations with Telegram Stars pricing
 PLANS = {
@@ -192,25 +239,25 @@ async def successful_payment_handler(message: Message):
     payment = message.successful_payment
     
     if payment.invoice_payload.startswith("premium_"):
-        plan_key = payment.invoice_payload.split("premium_")[-1]
+        raw_plan_key = payment.invoice_payload.split("premium_")[-1]
+        try:
+            validated_plan = await validate_payment_amount(
+                raw_plan_key, payment.total_amount, payment.currency
+            )
+        except ValueError as e:
+            logger.error(f"Payment validation failed for user {user_id}: {e}")
+            await message.reply(
+                "⚠️ Payment underpaid or invalid. No activation was performed. Please contact support.",
+                parse_mode="HTML",
+            )
+            return
+
+        plan_key = validated_plan
         plan = PLANS.get(plan_key)
         
         if plan:
-            # Record payment in Engine (payment verification), then upgrade
-            payment_id = await engine_client.record_payment(
-                str(user_id), plan_key, "telegram_stars",
-                external_id=getattr(payment, "telegram_payment_charge_id", None) or str(payment.total_amount)
-            )
-            if payment_id:
-                await engine_client.log_activity(user_id, "payment_completed", {"plan": plan_key, "provider": "telegram_stars"})
-                await activate_premium_plan(user_id, plan_key, plan, payment_record_id=payment_id)
-            else:
-                logger.error(f"Payment recording failed for user {user_id} plan {plan_key} — skipping activation")
-                await message.reply(
-                    "⚠️ Payment received but activation failed. Please contact @TonGPT_Support with your receipt.",
-                    parse_mode="HTML"
-                )
-                return
+            charge_id = getattr(payment, "telegram_payment_charge_id", None) or str(payment.total_amount)
+            await activate_payment_idempotent(user_id=user_id, charge_id=charge_id, plan_key=plan_key)
 
             # Track revenue
             stars_received = payment.total_amount // 100
@@ -319,7 +366,7 @@ async def referrals_callback(callback_query: types.CallbackQuery):
 @router.callback_query(lambda c: c.data.startswith("check_status_"))
 async def check_status_callback(callback_query: types.CallbackQuery):
     """Check user subscription status"""
-    user_id = int(callback_query.data.split("_")[-1])
+    user_id = callback_query.from_user.id
     
     # Get user plan and usage from Redis
     current_plan = await get_user_plan(user_id)

@@ -8,6 +8,7 @@ from typing import List, Dict, Optional, Set
 import os
 import time
 import json
+import html as _html
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -316,18 +317,22 @@ class XMonitor:
         return query
     
     def extract_ton_contract_addresses(self, text: str) -> List[str]:
-        """Extract TON contract addresses from tweet text"""
-        # TON address patterns
+        """Extract TON contract addresses from tweet text safely."""
+        # Normalize and sanitize tweet content before pattern matching
+        cleaned = _html.unescape(text.strip())
+        cleaned = re.sub(r'[\x00-\x1f\x7f]', '', cleaned)
+
         ton_patterns = [
-            r'EQ[A-Za-z0-9_-]{46}',  # Standard TON address
-            r'UQ[A-Za-z0-9_-]{46}',  # Another TON format
+            r'\bEQ[A-Za-z0-9_-]{46}\b',  # Standard TON address
+            r'\bUQ[A-Za-z0-9_-]{46}\b',  # Another TON format
         ]
         
-        addresses = []
+        addresses: List[str] = []
         for pattern in ton_patterns:
-            matches = re.findall(pattern, text)
+            matches = re.findall(pattern, cleaned)
             addresses.extend(matches)
         
+        # Never store raw tweet text in the database; only derived, sanitized data like addresses.
         return list(set(addresses))  # Remove duplicates
     
     def calculate_memecoin_score(self, tweet: Dict) -> float:

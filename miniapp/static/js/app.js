@@ -23,6 +23,13 @@ class TonGPTApp {
             // Setup Telegram WebApp
             this.setupTelegramWebApp();
             
+            // Check Consent first
+            const hasConsent = await this.checkConsent();
+            if (!hasConsent) {
+                this.renderConsentScreen();
+                return; // Stop initialization until consent is given
+            }
+            
             // Initialize TonConnect
             await initTonConnect();
             
@@ -45,6 +52,90 @@ class TonGPTApp {
             console.error('Failed to initialize TonGPT:', error);
             showNotification('Failed to initialize app', 'error');
         }
+    }
+
+    async checkConsent() {
+        try {
+            const response = await apiClient.request('/user/consent-status');
+            return response.accepted === true;
+        } catch (error) {
+            console.error('Failed to check consent status:', error);
+            // Default to requiring consent on error to be safe
+            return false;
+        }
+    }
+
+    renderConsentScreen() {
+        const mainContent = document.getElementById('main-content');
+        if (!mainContent) return;
+
+        // Hide navigation while on consent screen
+        const nav = document.querySelector('.bottom-nav');
+        if (nav) nav.style.display = 'none';
+
+        mainContent.innerHTML = `
+            <div class="p-6 space-y-6 max-w-md mx-auto mt-10">
+                <div class="text-center">
+                    <div class="text-6xl mb-4">📜</div>
+                    <h1 class="text-2xl font-bold gradient-text mb-2">Terms of Service</h1>
+                    <p class="telegram-hint">Welcome to TonGPT! Before you begin, please review our terms.</p>
+                </div>
+
+                <div class="glass-morphism rounded-2xl p-4 text-sm space-y-3 h-64 overflow-y-auto">
+                    <p>By using TonGPT, you agree to the following:</p>
+                    <ul class="list-disc pl-5 space-y-2">
+                        <li>TonGPT provides AI analysis and metrics for informational purposes only.</li>
+                        <li><strong>Not Financial Advice:</strong> None of the insights or AI outputs constitute financial, investment, or trading advice.</li>
+                        <li>You are solely responsible for any transactions you make using connected wallets.</li>
+                        <li>Memecoins are highly volatile and carry significant risk of loss.</li>
+                    </ul>
+                    <p class="mt-4">Read our full <a href="#" class="telegram-accent underline">Terms of Service</a> and <a href="#" class="telegram-accent underline">Privacy Policy</a>.</p>
+                </div>
+
+                <div class="space-y-3 pt-4">
+                    <button id="accept-consent-btn" class="w-full telegram-button rounded-xl py-3 font-medium text-lg flex items-center justify-center">
+                        <i class="fas fa-check mr-2"></i> I Accept
+                    </button>
+                    <button id="decline-consent-btn" class="w-full bg-red-500 bg-opacity-20 text-red-400 rounded-xl py-3 font-medium text-sm flex items-center justify-center">
+                        Decline & Exit
+                    </button>
+                </div>
+            </div>
+        `;
+
+        document.getElementById('accept-consent-btn').addEventListener('click', async () => {
+            const btn = document.getElementById('accept-consent-btn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<div class="loading-spinner w-5 h-5 mr-2"></div> Accepting...';
+            btn.disabled = true;
+
+            try {
+                await apiClient.request('/user/record-consent', {
+                    method: 'POST',
+                    body: JSON.stringify({ version: 'v1' })
+                });
+                
+                // Consent recorded, resume initialization
+                if (nav) nav.style.display = 'flex';
+                
+                // Re-run init to continue normal flow
+                await this.init();
+                
+            } catch (error) {
+                console.error('Failed to record consent:', error);
+                showNotification('Failed to record consent. Please try again.', 'error');
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        });
+
+        document.getElementById('decline-consent-btn').addEventListener('click', () => {
+            if (this.tg) {
+                this.tg.close();
+            } else {
+                window.close();
+            }
+        });
     }
 
     setupTelegramWebApp() {
@@ -326,10 +417,15 @@ class TonGPTApp {
 
         try {
             showNotification(`Processing ${planConfig.name} plan payment (${planConfig.price} TON)...`);
+
+            // Fetch current payment wallet address from backend
+            const addressInfo = await apiClient.request('/subscription/payment-info?plan=' + planConfig.name);
+            const recipientAddress = addressInfo.address;
             
             const result = await tonConnect.sendTransaction(
                 planConfig.price, 
-                `TonGPT ${planConfig.name} subscription`
+                `TonGPT ${planConfig.name} subscription`,
+                recipientAddress
             );
             
             if (result) {
@@ -354,24 +450,30 @@ class TonGPTApp {
         }
     }
 
-    shareReferral() {
-        const userId = this.tg?.initDataUnsafe?.user?.id || 'demo123';
-        const referralLink = `https://t.me/TonGpt_bot?start=${userId}`;
-        
-        if (navigator.share) {
-            navigator.share({
-                title: 'Join TonGPT - TON Memecoin Analyzer',
-                text: 'Get AI-powered memecoin analysis on TON blockchain!',
-                url: referralLink
-            });
-        } else {
-            Utils.copyToClipboard(referralLink).then(success => {
-                if (success) {
-                    showNotification('Referral link copied to clipboard!', 'success');
-                } else {
-                    showNotification('Failed to copy referral link', 'error');
-                }
-            });
+    async shareReferral() {
+        try {
+            const response = await apiClient.request('/user/referral-token');
+            const token = response.token;
+            const referralLink = `https://t.me/TonGpt_bot?start=${token}`;
+            
+            if (navigator.share) {
+                navigator.share({
+                    title: 'Join TonGPT - TON Memecoin Analyzer',
+                    text: 'Get AI-powered memecoin analysis on TON blockchain!',
+                    url: referralLink
+                });
+            } else {
+                Utils.copyToClipboard(referralLink).then(success => {
+                    if (success) {
+                        showNotification('Referral link copied to clipboard!', 'success');
+                    } else {
+                        showNotification('Failed to copy referral link', 'error');
+                    }
+                });
+            }
+        } catch (error) {
+            console.error('Error sharing referral:', error);
+            showNotification('Failed to generate referral link.', 'error');
         }
     }
 

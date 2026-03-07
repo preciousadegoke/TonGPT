@@ -108,6 +108,15 @@ async def start_background_tasks(services: Dict[str, Any]) -> None:
     except Exception as e:
         logger.warning("⚠ Wallet monitoring not started: %s", e)
 
+    # Start periodic notification cleanup
+    try:
+        from services.notifications import notification_cleanup_loop
+        retention_days = int(os.getenv("NOTIFICATION_RETENTION_DAYS", "30"))
+        asyncio.create_task(notification_cleanup_loop(retention_days=retention_days))
+        logger.info("🧹 Notification cleanup loop started")
+    except Exception as e:
+        logger.warning("⚠ Wallet monitoring not started: %s", e)
+
 async def initialize_all_services(config: Dict[str, Any]) -> Dict[str, Any]:
     """Initialize all services and return service instances"""
     services = {}

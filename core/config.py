@@ -42,7 +42,12 @@ def load_config() -> Dict[str, Any]:
     # Anti-Bot & Economic Guardrails
     FREE_USER_LIFETIME_AI_QUERIES = int(os.getenv("FREE_USER_LIFETIME_AI_QUERIES", 50))
     GPT_DAILY_SPEND_LIMIT = float(os.getenv("GPT_DAILY_SPEND_LIMIT", 10.0))
-    CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "*").split(",")
+    _cors_raw = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+    if not CORS_ALLOWED_ORIGINS:
+        raise ValueError(
+            "CORS_ALLOWED_ORIGINS must be set. Example: https://yourdomain.com"
+        )
 
     return {
         "BOT_TOKEN": BOT_TOKEN,

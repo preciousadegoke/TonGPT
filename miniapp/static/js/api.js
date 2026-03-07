@@ -16,6 +16,11 @@ class APIClient {
             ...options
         };
 
+        // Inject Telegram WebApp initData if available
+        if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) {
+            config.headers['X-Telegram-Init-Data'] = window.Telegram.WebApp.initData;
+        }
+
         try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), this.timeout);

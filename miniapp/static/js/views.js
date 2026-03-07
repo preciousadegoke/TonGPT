@@ -204,10 +204,10 @@ class ViewRenderer {
             trendsEl.innerHTML = data.trends.map(trend => `
                 <div class="flex justify-between items-center p-3 bg-${trend.color}-500 bg-opacity-10 rounded-xl">
                     <div>
-                        <div class="font-medium text-${trend.color}-400">${trend.category}</div>
-                        <div class="text-sm telegram-hint">${trend.description}</div>
+                        <div class="font-medium text-${trend.color}-400">${escapeHTML(trend.category)}</div>
+                        <div class="text-sm telegram-hint">${escapeHTML(trend.description)}</div>
                     </div>
-                    <div class="text-${trend.color}-400 font-bold">${trend.change}</div>
+                    <div class="text-${trend.color}-400 font-bold">${escapeHTML(trend.change)}</div>
                 </div>
             `).join('');
         }
@@ -221,13 +221,13 @@ class ViewRenderer {
                         <span class="text-lg mr-2">${index + 1}</span>
                         <span class="text-xl mr-2">${getMemecoinEmoji(coin.type)}</span>
                         <div>
-                            <div class="font-medium">${coin.name}</div>
-                            <div class="text-sm telegram-hint">${coin.price}</div>
+                            <div class="font-medium">${escapeHTML(coin.name)}</div>
+                            <div class="text-sm telegram-hint">${escapeHTML(coin.price)}</div>
                         </div>
                     </div>
                     <div class="text-right">
-                        <div class="font-bold price-up">${coin.change}</div>
-                        <div class="text-sm telegram-hint">$${coin.volume}</div>
+                        <div class="font-bold price-up">${escapeHTML(coin.change)}</div>
+                        <div class="text-sm telegram-hint">$${escapeHTML(coin.volume)}</div>
                     </div>
                 </div>
             `).join('');
@@ -239,7 +239,7 @@ class ViewRenderer {
             insightsEl.innerHTML = data.insights.map(insight => `
                 <div class="flex items-start">
                     <i class="fas fa-circle text-${insight.color}-400 text-xs mt-2 mr-2"></i>
-                    <span>${insight.text}</span>
+                    <span>${escapeHTML(insight.text)}</span>
                 </div>
             `).join('');
         }
@@ -372,19 +372,19 @@ class ViewRenderer {
                     <div class="flex items-center justify-between mb-2">
                         <div class="flex items-center">
                             <i class="fas fa-check-circle text-blue-400 mr-2"></i>
-                            <span class="font-medium">${post.author}</span>
-                            <span class="text-xs telegram-hint ml-2">${post.followers} followers</span>
+                            <span class="font-medium">${escapeHTML(post.author)}</span>
+                            <span class="text-xs telegram-hint ml-2">${escapeHTML(post.followers)} followers</span>
                         </div>
-                        <span class="text-xs telegram-hint">${post.time_ago}</span>
+                        <span class="text-xs telegram-hint">${escapeHTML(post.time_ago)}</span>
                     </div>
-                    <p class="text-sm mb-2">${post.content}</p>
+                    <p class="text-sm mb-2">${escapeHTML(post.content)}</p>
                     <div class="flex items-center justify-between text-xs">
                         <div class="flex items-center space-x-4">
-                            <span>❤️ ${post.likes}</span>
-                            <span>🔄 ${post.retweets}</span>
+                            <span>❤️ ${escapeHTML(post.likes)}</span>
+                            <span>🔄 ${escapeHTML(post.retweets)}</span>
                         </div>
                         <span class="text-${post.sentiment === 'bullish' ? 'green' : post.sentiment === 'bearish' ? 'red' : 'yellow'}-400 font-medium">
-                            ${post.sentiment}
+                            ${escapeHTML(post.sentiment)}
                         </span>
                     </div>
                 </div>
@@ -414,7 +414,7 @@ class ViewRenderer {
         const topicsEl = document.getElementById('trending-topics');
         if (topicsEl && data.trending_topics) {
             topicsEl.innerHTML = data.trending_topics.map(topic => 
-                `<span class="px-3 py-1 bg-${topic.color}-500 bg-opacity-20 text-${topic.color}-400 rounded-full text-sm">${topic.tag}</span>`
+                `<span class="px-3 py-1 bg-${topic.color}-500 bg-opacity-20 text-${topic.color}-400 rounded-full text-sm">${escapeHTML(topic.tag)}</span>`
             ).join('');
         }
     }
@@ -505,25 +505,25 @@ class ViewRenderer {
                         <div class="text-2xl mr-3">${emoji}</div>
                         <div>
                             <div class="flex items-center">
-                                <span class="font-bold">${coin.name || 'Unknown'}</span>
+                                <span class="font-bold">${escapeHTML(coin.name || 'Unknown')}</span>
                                 ${verified}
                             </div>
-                            <span class="text-sm telegram-hint">${coin.symbol || 'N/A'}</span>
+                            <span class="text-sm telegram-hint">${escapeHTML(coin.symbol || 'N/A')}</span>
                         </div>
                     </div>
                     <div class="text-right">
-                        <div class="font-bold">${coin.price || '$0.00'}</div>
-                        <div class="text-sm ${changeColor}">${coin.change || '0%'}</div>
+                        <div class="font-bold">${escapeHTML(coin.price || '$0.00')}</div>
+                        <div class="text-sm ${changeColor}">${escapeHTML(coin.change || '0%')}</div>
                     </div>
                 </div>
                 <div class="grid grid-cols-2 gap-4 text-sm">
                     <div>
                         <div class="telegram-hint">Volume 24h</div>
-                        <div class="font-medium">${coin.volume || '0'}</div>
+                        <div class="font-medium">${escapeHTML(coin.volume || '0')}</div>
                     </div>
                     <div>
                         <div class="telegram-hint">Holders</div>
-                        <div class="font-medium">${coin.holders || '0'}</div>
+                        <div class="font-medium">${escapeHTML(coin.holders || '0')}</div>
                     </div>
                 </div>
                 <div class="grid grid-cols-2 gap-2 mt-3">

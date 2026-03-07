@@ -7,6 +7,9 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+ENGINE_API_KEY = os.environ["ENGINE_API_KEY"]
+
+
 class EngineClient:
     """
     Client for interactions with the C# TonGPT.Engine API.
@@ -18,14 +21,13 @@ class EngineClient:
             self.base_url = base_url.rstrip('/')
         else:
             self.base_url = os.getenv("ENGINE_URL", "http://localhost:5090/api").rstrip('/')
-        self._api_key = os.getenv("ENGINE_API_KEY")
 
     def _headers(self) -> Dict[str, str]:
-        """Headers for Engine API (include API key when configured)."""
-        h = {"Content-Type": "application/json"}
-        if self._api_key:
-            h["X-Api-Key"] = self._api_key
-        return h
+        """Headers for Engine API (API key is always required)."""
+        return {
+            "Authorization": f"Bearer {ENGINE_API_KEY}",
+            "Content-Type": "application/json",
+        }
 
     async def _get(self, endpoint: str) -> Dict[str, Any]:
         """Internal helper for GET requests"""

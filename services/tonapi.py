@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Union
 import json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import httpx
 
 # Load environment variables
 load_dotenv()
@@ -15,6 +16,23 @@ logger = logging.getLogger(__name__)
 # API Configuration
 TONAPI_BASE_URL = "https://tonapi.io/v2"
 TONAPI_KEY = os.getenv("TONAPI_KEY")  # Optional - TON API works without auth for basic requests
+
+
+async def get_ton_price_usd() -> float:
+    """
+    Fetch live TON/USD price. Raises on failure.
+    Never fall back to a hardcoded value — a wrong price enables underpayment attacks.
+    """
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": "the-open-network", "vs_currencies": "usd"},
+        )
+        resp.raise_for_status()
+        price = resp.json()["the-open-network"]["usd"]
+        if not isinstance(price, (int, float)) or price <= 0:
+            raise ValueError(f"Invalid TON price: {price}")
+        return float(price)
 
 class EnhancedTONAPIClient:
     """Enhanced TON API client with whale transaction monitoring and basic wallet functions"""
@@ -419,9 +437,27 @@ class EnhancedTONAPIClient:
             return 'regular'
     
     def _estimate_usd_value(self, amount_ton: float) -> float:
-        """Estimate USD value of TON amount"""
-        # In practice, you'd get real TON price from an API
-        ton_price_usd = 2.5  # Placeholder price
+        """Estimate USD value of TON amount using live market data.
+
+        This method performs a blocking HTTP request and should not be called
+        from performance‑critical or latency‑sensitive paths.
+        """
+        try:
+            resp = requests.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": "the-open-network", "vs_currencies": "usd"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            price = data["the-open-network"]["usd"]
+            if not isinstance(price, (int, float)) or price <= 0:
+                raise ValueError(f"Invalid TON price: {price}")
+            ton_price_usd = float(price)
+        except Exception as e:
+            logger.error(f"Failed to fetch TON/USD price: {e}")
+            raise
+
         return amount_ton * ton_price_usd
     
     def _format_timestamp(self, timestamp: int) -> str:

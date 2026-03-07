@@ -1,5 +1,16 @@
 // Utility Functions for TonGPT
 class Utils {
+    // HTML Escaping Utility
+    static escapeHTML(str) {
+        if (str == null) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#x27;');
+    }
+
     // Get memecoin emoji based on type
     static getMemecoinEmoji(type) {
         return CONFIG.EMOJIS[type] || CONFIG.EMOJIS.default;
@@ -230,6 +241,10 @@ class Utils {
 }
 
 // Global utility functions for convenience
+function escapeHTML(str) {
+    return Utils.escapeHTML(str);
+}
+
 function getMemecoinEmoji(type) {
     return Utils.getMemecoinEmoji(type);
 }

@@ -31,8 +31,7 @@ namespace TonGPT.Engine.Controllers
         [HttpPost("auth")]
         public async Task<IActionResult> AuthenticateWallet([FromBody] WalletAuthDto authDto)
         {
-            var redactedAddress = authDto.Address.Length > 10 ? $"{authDto.Address.Substring(0, 6)}...{authDto.Address.Substring(authDto.Address.Length - 4)}" : "***";
-            _logger.LogInformation($"Authenticating wallet {redactedAddress} for user {authDto.TelegramId}");
+            _logger.LogInformation("Authenticating wallet for user [ID_REDACTED]");
 
             // Only accept proofs that have been verified by the Python server.
             // Direct client calls with raw ton_proof payloads are rejected.
@@ -54,7 +53,7 @@ namespace TonGPT.Engine.Controllers
                 u.WalletAddress == authDto.Address && u.TelegramId != authDto.TelegramId.ToString());
             if (existingOwner != null)
             {
-                _logger.LogWarning($"Wallet {redactedAddress} already linked to user {existingOwner.TelegramId}");
+                _logger.LogWarning("Wallet link attempt rejected: address already linked to another user.");
                 return Conflict(new { message = "This wallet is already linked to another account." });
             }
 
@@ -64,7 +63,7 @@ namespace TonGPT.Engine.Controllers
             {
                 TelegramId = authDto.TelegramId.ToString(),
                 Action = "wallet_linked",
-                Metadata = System.Text.Json.JsonSerializer.Serialize(new { Address = redactedAddress }),
+                Metadata = System.Text.Json.JsonSerializer.Serialize(new { Address = "[REDACTED]" }),
                 Success = true,
                 Timestamp = DateTime.UtcNow
             });

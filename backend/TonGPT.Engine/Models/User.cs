@@ -31,6 +31,10 @@ namespace TonGPT.Engine.Models
 
         public DateTime? SubscriptionExpiry { get; set; }
 
+        public string? ConsentVersion { get; set; }
+
+        public DateTime? ConsentAt { get; set; }
+
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     }
 }

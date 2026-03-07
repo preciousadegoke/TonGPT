@@ -1,23 +1,21 @@
 import asyncio
 import logging
-from redis import Redis
 from typing import List, Dict, Any
 
-# Initialize Redis client
-redis_client = Redis(host='localhost', port=6379, decode_responses=True)
+from utils.redis_conn import redis_client
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
-# Import or define these functions based on your project structure
 from .blockchain import get_recent_transactions, is_large_transaction
 from .notifications import notify_followers
 
+
 async def monitor_followed_wallets():
-    """Background task to check followed wallets"""
+    """Background task to check followed wallets using the shared Redis client."""
     while True:
         try:
-            addresses = redis_client.smembers("tracked_addresses")
+            addresses = redis_client.smembers("tracked_addresses") if redis_client else set()
             for address in addresses:
                 transactions = get_recent_transactions(address)
                 for tx in transactions:
@@ -26,6 +24,3 @@ async def monitor_followed_wallets():
             await asyncio.sleep(60)  # Check every minute
         except Exception as e:
             logger.error(f"Monitoring error: {e}")
-
-if __name__ == "__main__":
-    asyncio.run(monitor_followed_wallets())

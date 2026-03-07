@@ -115,7 +115,7 @@ namespace TonGPT.Engine.Services
                                  {
                                      user.Plan = newPlan;
                                      user.SubscriptionExpiry = DateTimeOffset.FromUnixTimeSeconds(expiryTimestamp).UtcDateTime;
-                                     _logger.LogInformation($"Updated subscription for {user.WalletAddress}: {newPlan}");
+                                     _logger.LogInformation("Updated subscription for a user to plan {Plan}", newPlan);
                                  }
                              }
                          }

@@ -72,10 +72,13 @@ class NotificationService:
             conn = sqlite3.connect('notifications.db')
             cursor = conn.cursor()
             
-            cursor.execute(f'''
+            cursor.execute(
+                '''
                 DELETE FROM notification_history 
-                WHERE sent_at < date('now', '-{days} days')
-            ''')
+                WHERE sent_at < date('now', ?)
+                ''',
+                (f"-{int(days)} days",),
+            )
             
             conn.commit()
             rows_deleted = cursor.rowcount
@@ -86,6 +89,25 @@ class NotificationService:
             
         except Exception as e:
             logger.error(f"Failed to cleanup old notifications: {e}")
+
+
+async def cleanup_old_notifications(db_path: str = "notifications.db", retention_days: int = 30):
+    """Async wrapper to cleanup old notifications using the shared SQLite database."""
+    svc = NotificationService()
+    try:
+        svc.cleanup_old_notifications(days=retention_days)
+    except Exception as e:
+        logger.error(f"Async cleanup failed: {e}")
+
+
+async def notification_cleanup_loop(retention_days: int = 30, interval_seconds: int = 86400):
+    """Periodic cleanup task for notification history."""
+    while True:
+        try:
+            await cleanup_old_notifications(retention_days=retention_days)
+        except Exception as e:
+            logger.error(f"Cleanup failed: {e}")
+        await asyncio.sleep(interval_seconds)
 
     def init_database(self):
         """Initialize SQLite database for notification settings"""
@@ -129,9 +151,6 @@ class NotificationService:
             conn.commit()
             conn.close()
             logger.info("Database initialized successfully")
-            
-            # Run cleanup on init
-            self.cleanup_old_notifications()
             
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")

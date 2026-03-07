@@ -3,12 +3,29 @@ from aiogram import Router, types
 from aiogram.filters import Command
 from services.tonapi import get_large_transactions, get_whale_summary
 from utils.redis_conn import redis_client
+from services.engine_client import engine_client
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+async def get_user_premium_status(redis_client, engine_client, user_id: int) -> bool:
+    cached = redis_client.get(f"premium:{user_id}")
+    if cached is not None:
+        return cached == "1" or cached == b"1"
+    try:
+        status = await engine_client.get_user_status(str(user_id))
+        plan = (status.get("plan") or "").lower()
+        is_premium = plan not in ("", "free")
+    except Exception:
+        return False  # Fail closed — deny premium on Engine failure
+    redis_client.set(
+        f"premium:{user_id}", "1" if is_premium else "0", ex=300
+    )
+    return is_premium
 
 # Whale configuration
 WHALE_EMOJIS = {
@@ -37,16 +54,11 @@ WHALE_THRESHOLDS = {
 @router.message(Command("whale"))
 async def whale_alerts(message: types.Message):
     """Show recent whale transactions and alerts"""
-    user_id = str(message.from_user.id)
-    
-    # Check if user has premium access
-    premium_status = redis_client.get(f"premium:{user_id}")
-    has_premium = bool(premium_status)
-    
+    user_id = message.from_user.id
+    has_premium = await get_user_premium_status(redis_client, engine_client, user_id)
     # Get user plan or default to free
-    user_plan = 'free'
-    if has_premium:
-        user_plan = premium_status.decode('utf-8') if isinstance(premium_status, bytes) else premium_status
+    status = await engine_client.get_user_status(str(user_id))
+    user_plan = (status.get("plan") or "Free").lower()
     
     await message.reply("🐋 <b>Scanning for whale movements...</b>", parse_mode="HTML")
     await message.bot.send_chat_action(message.chat.id, "typing")
@@ -101,11 +113,11 @@ async def whale_alerts(message: types.Message):
 @router.message(Command("whale_summary"))
 async def whale_summary(message: types.Message):
     """Show detailed whale activity summary"""
-    user_id = str(message.from_user.id)
+    user_id = message.from_user.id
     
     # Check premium status
-    premium_status = redis_client.get(f"premium:{user_id}")
-    if not premium_status:
+    has_premium = await get_user_premium_status(redis_client, engine_client, user_id)
+    if not has_premium:
         await message.reply(
             "🐋 <b>Whale Activity Summary</b>\n\n"
             "❌ <b>Premium Feature Required</b>\n\n"
@@ -123,7 +135,8 @@ async def whale_summary(message: types.Message):
         )
         return
     
-    user_plan = premium_status.decode('utf-8') if isinstance(premium_status, bytes) else premium_status
+    status = await engine_client.get_user_status(str(user_id))
+    user_plan = (status.get("plan") or "Free").lower()
     
     await message.reply("📊 <b>Analyzing whale activity patterns...</b>", parse_mode="HTML")
     await message.bot.send_chat_action(message.chat.id, "typing")
@@ -184,11 +197,11 @@ async def whale_summary(message: types.Message):
 @router.message(Command("whale_config"))
 async def whale_config(message: types.Message):
     """Configure whale alert settings"""
-    user_id = str(message.from_user.id)
+    user_id = message.from_user.id
     
     # Check premium status
-    premium_status = redis_client.get(f"premium:{user_id}")
-    if not premium_status:
+    has_premium = await get_user_premium_status(redis_client, engine_client, user_id)
+    if not has_premium:
         await message.reply(
             "⚙️ <b>Whale Configuration</b>\n\n"
             "❌ Premium feature required for custom whale settings.\n\n"
@@ -202,7 +215,8 @@ async def whale_config(message: types.Message):
         )
         return
     
-    user_plan = premium_status.decode('utf-8') if isinstance(premium_status, bytes) else premium_status
+    status = await engine_client.get_user_status(str(user_id))
+    user_plan = (status.get("plan") or "Free").lower()
     current_threshold = get_whale_threshold_for_plan(user_plan)
     
     config_msg = (
@@ -270,21 +284,23 @@ async def whale_summary_callback(callback_query: types.CallbackQuery):
 @router.callback_query(lambda c: c.data == "whale_settings")
 async def whale_settings_callback(callback_query: types.CallbackQuery):
     """Show whale alert settings"""
-    user_id = str(callback_query.from_user.id)
-    premium_status = redis_client.get(f"premium:{user_id}")
+    user_id = callback_query.from_user.id
+    has_premium = await get_user_premium_status(redis_client, engine_client, user_id)
     
-    if not premium_status:
+    if not has_premium:
         await callback_query.answer("❌ Premium required for settings", show_alert=True)
         return
     
-    current_threshold = get_whale_threshold_for_plan(premium_status)
+    status = await engine_client.get_user_status(str(user_id))
+    current_plan = (status.get("plan") or "Free").lower()
+    current_threshold = get_whale_threshold_for_plan(current_plan)
     
     settings_msg = (
         f"⚙️ <b>Whale Alert Settings</b>\n\n"
         f"🎯 <b>Current Threshold:</b> {current_threshold:,.0f} TON\n"
         f"🔔 <b>Notifications:</b> {'Enabled' if redis_client.get(f'whale_notifications:{user_id}') else 'Disabled'}\n"
         f"📱 <b>Auto-refresh:</b> Every 5 minutes\n"
-        f"📊 <b>Display Limit:</b> {get_display_limit_for_plan(premium_status)} transactions\n\n"
+        f"📊 <b>Display Limit:</b> {get_display_limit_for_plan(current_plan)} transactions\n\n"
         f"💡 Settings are based on your premium plan level"
     )
     
@@ -302,7 +318,7 @@ async def whale_settings_callback(callback_query: types.CallbackQuery):
 @router.callback_query(lambda c: c.data.startswith("toggle_notifications_"))
 async def toggle_notifications_callback(callback_query: types.CallbackQuery):
     """Toggle whale notifications"""
-    user_id = callback_query.data.replace("toggle_notifications_", "")
+    user_id = callback_query.from_user.id
     
     current_status = redis_client.get(f"whale_notifications:{user_id}")
     

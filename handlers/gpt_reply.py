@@ -1,5 +1,6 @@
 # handlers/gpt_reply.py - FIXED
 import logging
+import re
 from aiogram import Router, types
 from aiogram.filters import Command
 from gpt.engine import ask_gpt
@@ -9,14 +10,31 @@ logger = logging.getLogger(__name__)
 # Create router for this module
 router = Router()
 
+MAX_INPUT = 2000
+
+
+def sanitize_user_input(text: str) -> str:
+    if not text:
+        return ""
+    text = text.strip()[:MAX_INPUT]
+    injection_patterns = [
+        r"(?i)ignore\s+(all\s+)?(previous|prior|above)\s+instructions?",
+        r"(?i)you\s+are\s+now\s+",
+        r"(?i)disregard\s+your\s+(system\s+)?prompt",
+    ]
+    for p in injection_patterns:
+        text = re.sub(p, "[removed]", text)
+    return text
+
 async def _handle_gpt_query_impl(message: types.Message):
     """Handle GPT queries from users with comprehensive error handling (inner impl for rate-limit decorator)."""
     try:
         # Handle both /ask command and general messages
         if message.text.startswith('/ask'):
-            question = message.text.replace('/ask', '').strip()
+            question_raw = message.text.replace('/ask', '').strip()
         else:
-            question = message.text.strip()
+            question_raw = message.text.strip()
+        question = sanitize_user_input(question_raw)
         
         if not question:
             await message.reply("❌ Please provide a question after /ask")

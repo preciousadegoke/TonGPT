@@ -72,8 +72,41 @@ namespace TonGPT.Engine.Controllers
                 telegramId = user.TelegramId,
                 username = user.Username,
                 plan = user.Plan.ToString(),
-                expiry = user.SubscriptionExpiry
+                expiry = user.SubscriptionExpiry,
+                consentVersion = user.ConsentVersion
             });
+        }
+
+        public class UserConsentDto
+        {
+            public required string TelegramId { get; set; }
+            public required string Version { get; set; }
+        }
+
+        [HttpPost("recordConsent")]
+        public async Task<IActionResult> RecordConsent([FromBody] UserConsentDto dto)
+        {
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.TelegramId == dto.TelegramId);
+            if (user == null)
+            {
+                user = new User
+                {
+                    TelegramId = dto.TelegramId,
+                    CreatedAt = DateTime.UtcNow,
+                    Plan = SubscriptionPlan.Free,
+                    ConsentVersion = dto.Version,
+                    ConsentAt = DateTime.UtcNow
+                };
+                _context.Users.Add(user);
+            }
+            else
+            {
+                user.ConsentVersion = dto.Version;
+                user.ConsentAt = DateTime.UtcNow;
+            }
+
+            await _context.SaveChangesAsync();
+            return Ok(new { status = "Success" });
         }
 
         /// <summary>Export all data we hold for the user (GDPR data portability).</summary>

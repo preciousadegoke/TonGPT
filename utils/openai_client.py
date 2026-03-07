@@ -4,8 +4,29 @@ import logging
 from typing import Optional, Dict, List
 import openai
 from openai import AsyncOpenAI
+import json
+from utils.redis_conn import redis_client
 
 logger = logging.getLogger(__name__)
+
+
+class ConversationStore:
+    def __init__(self, redis_client, ttl: int = 3600):
+        self.redis = redis_client
+        self.ttl = ttl
+
+    async def get(self, user_id: int) -> list:
+        raw = self.redis.get(f"conv:{user_id}") if self.redis else None
+        return json.loads(raw) if raw else []
+
+    async def set(self, user_id: int, messages: list):
+        if self.redis:
+            self.redis.set(f"conv:{user_id}", json.dumps(messages), ex=self.ttl)
+
+    async def delete(self, user_id: int):
+        if self.redis:
+            self.redis.delete(f"conv:{user_id}")
+
 
 class OpenAIClient:
     """OpenAI/OpenRouter API client with conversation context management"""
@@ -32,8 +53,8 @@ class OpenAIClient:
         self.max_tokens = int(os.getenv('OPENAI_MAX_TOKENS', '1000'))
         self.temperature = float(os.getenv('OPENAI_TEMPERATURE', '0.7'))
         
-        # Conversation context storage (in production, use Redis or database)
-        self.conversation_contexts = {}
+        # Conversation context storage backed by Redis
+        self.conversations = ConversationStore(redis_client, ttl=int(os.getenv("CONVERSATION_TTL_SECONDS", "3600")))
         
         # System prompt for TonGPT
         self.system_prompt = """
@@ -64,9 +85,12 @@ Keep responses under 500 words unless specifically asked for detailed analysis.
             # Build conversation messages
             messages = [{"role": "system", "content": self.system_prompt}]
             
-            # Add conversation context if provided
-            if context:
-                messages.extend(context[-10:])  # Keep last 10 messages for context
+            # Add conversation context if provided or from store
+            history = context
+            if history is None and user_id is not None:
+                history = await self.conversations.get(user_id)
+            if history:
+                messages.extend(history[-10:])  # Keep last 10 messages for context
             
             # Add current user message
             messages.append({"role": "user", "content": message})
@@ -82,18 +106,18 @@ Keep responses under 500 words unless specifically asked for detailed analysis.
             
             ai_response = response.choices[0].message.content.strip()
             
-            # Store conversation context (in production, use persistent storage)
-            if user_id not in self.conversation_contexts:
-                self.conversation_contexts[user_id] = []
-            
-            self.conversation_contexts[user_id].extend([
-                {"role": "user", "content": message},
-                {"role": "assistant", "content": ai_response}
-            ])
-            
-            # Keep only last 20 messages per user
-            if len(self.conversation_contexts[user_id]) > 20:
-                self.conversation_contexts[user_id] = self.conversation_contexts[user_id][-20:]
+            # Store conversation context
+            if user_id is not None:
+                new_history = history or []
+                new_history.extend(
+                    [
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": ai_response},
+                    ]
+                )
+                if len(new_history) > 20:
+                    new_history = new_history[-20:]
+                await self.conversations.set(user_id, new_history)
             
             return ai_response
             
@@ -202,8 +226,7 @@ Keep response under 400 words.
     async def clear_context(self, user_id: int) -> bool:
         """Clear conversation context for user"""
         try:
-            if user_id in self.conversation_contexts:
-                del self.conversation_contexts[user_id]
+            await self.conversations.delete(user_id)
             return True
         except Exception as e:
             logger.error(f"Error clearing context for user {user_id}: {e}")
@@ -211,7 +234,7 @@ Keep response under 400 words.
     
     async def get_context(self, user_id: int) -> List[Dict]:
         """Get conversation context for user"""
-        return self.conversation_contexts.get(user_id, [])
+        return await self.conversations.get(user_id)
     
     async def health_check(self) -> bool:
         """Check if OpenAI API is accessible"""

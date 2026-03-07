@@ -2,7 +2,7 @@
 const CONFIG = {
     // API Configuration
     API: {
-        BASE_URL: 'https://tongpt.loca.lt/api', // Your Python backend URL
+        BASE_URL: window.TONGPT_API_URL || 'https://tongpt.loca.lt/api',
         ENDPOINTS: {
             MEMECOINS: '/memecoins',
             SCAN_TOKEN: '/scan-token',
@@ -17,7 +17,6 @@ const CONFIG = {
     // TonConnect Configuration
     TON_CONNECT: {
         MANIFEST_URL: 'https://your-domain.com/manifest.json', // Update with your actual manifest URL
-        RECIPIENT_ADDRESS: 'UQCYwQOwGs9JJq_H-KJKD12nb8iG10V6plEMO0xI3ykxLFDD', // Your TON wallet address
         NETWORK: 'mainnet' // 'mainnet' or 'testnet'
     },
 

@@ -4,16 +4,51 @@ FastAPI server for TonGPT Mini-App
 from datetime import datetime, timedelta
 from typing import Dict, Any
 import logging
+import os
+import hashlib
+import hmac
+import json as _json
+import time as _time
+from urllib.parse import parse_qsl
+import base64
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from services.analysis import analyze_token_ai, analyze_wallet_ai, calculate_risk_score, process_sentiment_data
 
 logger = logging.getLogger(__name__)
+
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+
+
+def verify_telegram_init_data(init_data: str) -> dict:
+    """
+    Verify Telegram WebApp initData HMAC.
+    Returns parsed user dict or raises ValueError.
+    """
+    if not init_data:
+        raise ValueError("Missing initData")
+
+    params = dict(parse_qsl(init_data, strict_parsing=True))
+    hash_value = params.pop("hash", None)
+    if not hash_value:
+        raise ValueError("Missing hash")
+
+    data_check = "\n".join(f"{k}={v}" for k, v in sorted(params.items()))
+    secret = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+    expected = hmac.new(secret, data_check.encode(), hashlib.sha256).hexdigest()
+
+    if not hmac.compare_digest(expected, hash_value):
+        raise ValueError("Invalid initData signature")
+
+    if _time.time() - int(params.get("auth_date", 0)) > 86400:
+        raise ValueError("initData expired")
+
+    return _json.loads(params["user"])
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -112,8 +147,19 @@ miniapp = create_miniapp_server()
 
 @miniapp.get("/")
 async def serve_miniapp():
-    """Serve the mini-app HTML"""
-    return FileResponse("miniapp/index.html")
+    """Serve the mini-app HTML with injected TONGPT_API_URL"""
+    try:
+        with open("miniapp/index.html", "r", encoding="utf-8") as f:
+            html = f.read()
+            
+        api_url = os.environ.get("API_BASE_URL", "https://tongpt.loca.lt/api")
+        injected_script = f'<script>window.TONGPT_API_URL = "{api_url}";</script></head>'
+        html = html.replace('</head>', injected_script)
+        
+        return HTMLResponse(content=html)
+    except Exception as e:
+        logger.error(f"Error serving mini-app HTML: {e}")
+        return FileResponse("miniapp/index.html")
 
 @miniapp.get("/api/scan")
 async def get_trending_coins():
@@ -329,61 +375,22 @@ async def authenticate_wallet(request: Request, data: dict):
     The ton_proof is a signed message produced by the wallet that proves the user
     controls the private key corresponding to the wallet address.
     """
-    import json
-    import hashlib
-    import hmac
-    import base64
-    import time
-    
     ip = request.client.host if request.client else "127.0.0.1"
     
-    telegram_id = data.get("TelegramId")
+    init_data_header = request.headers.get("X-Telegram-Init-Data", "")
+    try:
+        tg_user = verify_telegram_init_data(init_data_header)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+    telegram_id = tg_user["id"]
     address = data.get("Address")
     public_key = data.get("PublicKey")
     proof_json = data.get("Proof")
     state_init = data.get("StateInit")
-    init_data = data.get("TelegramInitData")
     
     if not all([telegram_id, address, proof_json]):
         raise HTTPException(status_code=400, detail="Missing required fields: TelegramId, Address, Proof")
-        
-    # Telegram initData Cryptographic Validation
-    if init_data:
-        try:
-            from urllib.parse import parse_qsl
-            import os
-            
-            init_data_dict = dict(parse_qsl(init_data))
-            hash_val = init_data_dict.pop('hash', None)
-            
-            if hash_val:
-                data_check_string = '\n'.join(f"{k}={v}" for k, v in sorted(init_data_dict.items()))
-                secret_key = hmac.new(b"WebAppData", os.getenv("BOT_TOKEN", "").encode(), hashlib.sha256).digest()
-                calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
-                
-                if calculated_hash != hash_val:
-                    raise ValueError("Invalid initData hash")
-                    
-                # Optional: Check auth_date for expiration (e.g. 24 hours)
-                auth_date = int(init_data_dict.get('auth_date', 0))
-                if time.time() - auth_date > 86400:
-                    raise ValueError("initData expired")
-        except Exception as e:
-            logger.warning(f"Telegram initData validation failed for IP {ip}: {e}")
-            try:
-                from utils.redis_conn import redis_client
-                rc = getattr(redis_client, "client", redis_client)
-                if rc:
-                    fail_key = f"initdata_fail:{ip}"
-                    fails = rc.incr(fail_key)
-                    if fails == 1:
-                        rc.expire(fail_key, 60)
-                    if fails >= 5: # Ban after 5 failures in 1 min
-                        rc.setex(f"ip_ban:{ip}", 600, "1") # 10 minute ban
-                        logger.critical(f"BANNED IP {ip} for brute-forcing initData")
-            except Exception:
-                pass
-            raise HTTPException(status_code=403, detail="Invalid application environment: authentication failed.")
     
     # Block the dev bypass
     if proof_json == "SKIP_VERIFICATION_DEV":
@@ -501,8 +508,10 @@ async def authenticate_wallet(request: Request, data: dict):
             logger.warning(f"Invalid ton_proof signature for address {address[:20]}...")
             raise HTTPException(status_code=403, detail="Invalid wallet signature — ownership verification failed")
         except ImportError:
-            logger.error("CRITICAL: PyNaCl missing — cannot verify wallet signatures securely.")
-            raise HTTPException(status_code=500, detail="Server misconfigured: missing security dependencies")
+            raise RuntimeError(
+                "PyNaCl is required for wallet verification. "
+                "Install it: pip install PyNaCl"
+            )
         except ValueError as ve:
             logger.error(f"Could not parse address for crypto verification: {ve}")
             raise HTTPException(status_code=400, detail="Invalid address format for verification")
@@ -536,6 +545,71 @@ async def authenticate_wallet(request: Request, data: dict):
     except Exception as e:
         logger.error(f"Failed to forward wallet auth to engine: {e}")
         raise HTTPException(status_code=500, detail="Failed to save wallet link")
+
+
+@miniapp.get("/api/user/consent-status")
+async def consent_status(request: Request):
+    """Check if the user has accepted the latest Terms of Service"""
+    try:
+        tg_user = verify_telegram_init_data(request.headers.get("X-Telegram-Init-Data", ""))
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid initData")
+
+    try:
+        from services.engine_client import engine_client
+        user = await engine_client.get_user(tg_user["id"])
+        accepted = user is not None and user.get("consentVersion") == "v1"
+    except Exception:
+        # User doesn't exist yet — treat as not consented, not as an error
+        accepted = False
+
+    return {"accepted": accepted}
+
+@miniapp.post("/api/user/record-consent")
+async def record_consent(request: Request, body: dict):
+    """Record that the user accepted the Terms of Service"""
+    try:
+        tg_user = verify_telegram_init_data(request.headers.get("X-Telegram-Init-Data", ""))
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid initData")
+
+    try:
+        from services.engine_client import engine_client
+        version = body.get("version", "v1")
+        result = await engine_client._post("User/recordConsent", {
+            "TelegramId": str(tg_user["id"]),
+            "Version": version
+        })
+        if result and result.get("status") == "Success":
+            return {"ok": True}
+        raise Exception("Engine failed to record consent")
+    except Exception as e:
+        logger.error(f"Error recording consent: {e}")
+        raise HTTPException(status_code=500, detail="Failed to record consent")
+
+@miniapp.get("/api/user/referral-token")
+async def get_referral_token(request: Request):
+    """Generate a referral token for the current user"""
+    try:
+        tg_user = verify_telegram_init_data(request.headers.get("X-Telegram-Init-Data", ""))
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid initData")
+
+    try:
+        from handlers.referral import generate_referral_token
+        token = generate_referral_token(tg_user["id"])
+        return {"token": token}
+    except Exception as e:
+        logger.error(f"Error generating referral token: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate referral token")
+
+@miniapp.get("/api/subscription/payment-info")
+async def get_payment_info(plan: str = "Pro"):
+    """Get the wallet address for subscription payments"""
+    address = os.environ.get("PAYMENT_WALLET_ADDRESS", "")
+    if not address:
+        raise HTTPException(status_code=500, detail="Payment address not configured")
+    return {"address": address, "plan": plan}
 
 
 @miniapp.get("/api/health")

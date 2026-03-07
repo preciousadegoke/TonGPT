@@ -4,6 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from utils.redis_conn import redis_client
+from services.engine_client import engine_client
 import logging
 import json
 from datetime import datetime, timedelta
@@ -400,30 +401,28 @@ async def show_recent_alerts(callback: CallbackQuery):
 
 async def setup_keyword_monitoring(callback: CallbackQuery):
     """Setup custom keyword monitoring (premium feature)"""
-    user_id = str(callback.from_user.id)
+    user_id = callback.from_user.id
     
-    # Check premium status
-    try:
-        is_premium = redis_client.get(f"premium:{user_id}")
-        if not is_premium:
-            await callback.message.edit_text(
-                "🔍 <b>Custom Keyword Monitoring</b>\n\n"
-                "❌ <b>Premium Feature Required</b>\n\n"
-                "This feature allows you to:\n"
-                "• Monitor custom keywords\n"
-                "• Set up personalized alerts\n"
-                "• Track specific topics\n"
-                "• Get priority notifications\n\n"
-                "💎 <b>Upgrade to Premium:</b>\n"
-                "Use /subscribe to unlock this and other Pro features!\n\n"
-                "🎁 <b>Free Alternative:</b>\n"
-                "Use /ask to search for specific topics manually.",
-                reply_markup=get_back_button(),
-                parse_mode="HTML"
-            )
-            return
-    except:
-        pass  # Continue if Redis unavailable
+    # Check premium status via Engine with Redis cache
+    from handlers.whale import get_user_premium_status
+    has_premium = await get_user_premium_status(redis_client, engine_client, user_id)
+    if not has_premium:
+        await callback.message.edit_text(
+            "🔍 <b>Custom Keyword Monitoring</b>\n\n"
+            "❌ <b>Premium Feature Required</b>\n\n"
+            "This feature allows you to:\n"
+            "• Monitor custom keywords\n"
+            "• Set up personalized alerts\n"
+            "• Track specific topics\n"
+            "• Get priority notifications\n\n"
+            "💎 <b>Upgrade to Premium:</b>\n"
+            "Use /subscribe to unlock this and other Pro features!\n\n"
+            "🎁 <b>Free Alternative:</b>\n"
+            "Use /ask to search for specific topics manually.",
+            reply_markup=get_back_button(),
+            parse_mode="HTML"
+        )
+        return
     
     await callback.message.edit_text(
         "🔍 <b>Custom Keyword Monitoring</b>\n\n"

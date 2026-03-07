@@ -75,8 +75,8 @@ namespace TonGPT.Engine.Controllers
                 throw; // Re-throw if it's a different DB error
             }
 
-            _logger.LogInformation("Payment recorded: {PaymentId} for user {TelegramId} plan {Plan} provider {Provider}",
-                payment.Id, request.TelegramId, request.Plan, request.Provider);
+            _logger.LogInformation("Payment recorded: {PaymentId} for plan {Plan} via {Provider}",
+                payment.Id, request.Plan, request.Provider);
 
             return Ok(new { paymentId = payment.Id, status = "Recorded" });
         }

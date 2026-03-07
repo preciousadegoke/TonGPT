@@ -466,34 +466,42 @@ class EarlyMemecoindDetector:
 early_detector = EarlyMemecoindDetector()
 
 # Utility functions for backward compatibility
-def scan_early_memecoins(hours_back: int = 6) -> List[Dict]:
-    """Scan for early memecoins - synchronous wrapper"""
+def _merge_and_rank_detections(new_detections: List[Dict], recent_detections: List[Dict], limit: int = 20) -> List[Dict]:
+    """Helper to merge, deduplicate and rank detections."""
+    all_detections = new_detections + recent_detections
+    seen_addresses = set()
+    unique_detections: List[Dict] = []
+    for detection in all_detections:
+        addr = detection.get("address", "")
+        if addr and addr not in seen_addresses:
+            seen_addresses.add(addr)
+            unique_detections.append(detection)
+    unique_detections.sort(key=lambda x: x.get("confidence_score", 0), reverse=True)
+    return unique_detections[:limit]
+
+
+async def scan_early_memecoins_async(hours_back: int = 6) -> List[Dict]:
+    """Async API to scan for early memecoins."""
     try:
-        # Run async scan
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        new_detections = loop.run_until_complete(early_detector.scan_for_early_memecoins())
+        new_detections = await early_detector.scan_for_early_memecoins()
         recent_detections = early_detector.get_recent_discoveries(hours=hours_back)
-        
-        # Combine and deduplicate
-        all_detections = new_detections + recent_detections
-        seen_addresses = set()
-        unique_detections = []
-        
-        for detection in all_detections:
-            addr = detection.get('address', '')
-            if addr and addr not in seen_addresses:
-                seen_addresses.add(addr)
-                unique_detections.append(detection)
-        
-        # Sort by confidence score
-        unique_detections.sort(key=lambda x: x.get('confidence_score', 0), reverse=True)
-        
-        return unique_detections[:20]  # Return top 20
-        
+        return _merge_and_rank_detections(new_detections, recent_detections)
     except Exception as e:
-        logger.error(f"Error in scan_early_memecoins: {e}")
+        logger.error(f"Error in scan_early_memecoins_async: {e}")
+        return []
+
+
+def scan_early_memecoins(hours_back: int = 6) -> List[Dict]:
+    """Scan for early memecoins - safe synchronous wrapper.
+
+    Uses asyncio.run in sync contexts and delegates to the async implementation.
+    """
+    try:
+        return asyncio.run(scan_early_memecoins_async(hours_back=hours_back))
+    except RuntimeError:
+        # If there's already a running loop (e.g. called from async code),
+        # the caller should prefer the async API instead of this sync wrapper.
+        logger.error("scan_early_memecoins called from within an event loop; use scan_early_memecoins_async instead.")
         return []
 
 def get_memecoin_analysis(address: str) -> Optional[Dict]:

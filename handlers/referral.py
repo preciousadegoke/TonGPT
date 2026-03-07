@@ -9,6 +9,9 @@ from aiogram import Dispatcher, Router, types
 from aiogram.filters import Command
 import logging
 import time
+import hmac
+import hashlib
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +19,8 @@ router = Router()
 
 REFERRAL_MIN_AGE_SECONDS = 86400   # 24 hours
 REFERRAL_MIN_COMMANDS = 3          # minimum interactions
+
+REFERRAL_SECRET = os.environ["REFERRAL_SECRET"]
 
 # ── helpers ──────────────────────────────────────────────────────────
 
@@ -101,6 +106,31 @@ async def validate_pending_referral(user_id: int):
         
     except Exception as e:
         logger.error(f"Referral validation error: {e}")
+
+
+def generate_referral_token(referrer_id: int) -> str:
+    sig = hmac.new(
+        REFERRAL_SECRET.encode(),
+        str(referrer_id).encode(),
+        hashlib.sha256,
+    ).hexdigest()[:16]
+    return f"{referrer_id}_{sig}"
+
+
+def verify_referral_token(token: str) -> int | None:
+    try:
+        referrer_id_str, sig = token.rsplit("_", 1)
+        referrer_id = int(referrer_id_str)
+        expected = hmac.new(
+            REFERRAL_SECRET.encode(),
+            str(referrer_id).encode(),
+            hashlib.sha256,
+        ).hexdigest()[:16]
+        if hmac.compare_digest(sig, expected):
+            return referrer_id
+    except Exception:
+        pass
+    return None
 
 
 def register_referral_handler(dp: Dispatcher):
