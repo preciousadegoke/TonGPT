@@ -7,7 +7,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-ENGINE_API_KEY = os.environ["ENGINE_API_KEY"]
+ENGINE_API_KEY = os.getenv("ENGINE_API_KEY", "")
 
 
 class EngineClient:

@@ -35,6 +35,10 @@ ctx = AppContext()
 # Load environment variables first, before any local imports
 load_dotenv(dotenv_path=Path('.') / '.env')
 
+# C-14: Validate required env vars early — before any module-level os.environ[] calls
+from core.env_guard import validate_required_env_vars
+validate_required_env_vars()
+
 # FIX-4: Unify Token Environment Variable Naming
 _bot_token = os.environ.get("BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN")
 if _bot_token:
@@ -314,6 +318,9 @@ async def register_all_handlers(ctx: AppContext):
        "alerts",
        "wallet_watch",
        "ston",
+       "early_detection",
+       "influencer_handler",
+       "referral",
     ]
     
     registered, failed = [], []
@@ -321,16 +328,29 @@ async def register_all_handlers(ctx: AppContext):
     for module_name in HANDLER_MODULES:
         try:
             module = importlib.import_module(f'handlers.{module_name}')
-            if hasattr(module, 'register'):
-                module.register(ctx.dp, ctx)
+            # Try register function first (accepts dp and optional ctx)
+            reg_func = None
+            for attr_name in dir(module):
+                if attr_name.startswith('register') and callable(getattr(module, attr_name)):
+                    reg_func = getattr(module, attr_name)
+                    break
+            
+            if reg_func:
+                import inspect
+                sig = inspect.signature(reg_func)
+                params = list(sig.parameters.keys())
+                if len(params) >= 2:
+                    reg_func(ctx.dp, ctx)
+                else:
+                    reg_func(ctx.dp)
                 registered.append(module_name)
-                logger.info(f"✅ Registered handler: {module_name}")
+                logger.info(f"✅ Registered handler via function: {module_name}")
             elif hasattr(module, 'router'):
                 ctx.dp.include_router(module.router)
                 registered.append(module_name)
                 logger.info(f"✅ Registered router: {module_name}")
             else:
-                logger.warning(f"⚠️ No register() or router found in handlers.{module_name}")
+                logger.warning(f"⚠️ No register function or router found in handlers.{module_name}")
                 failed.append(module_name)
         except ImportError:
             logger.warning(f"⚠️ Handler module not found: {module_name} — skipping")

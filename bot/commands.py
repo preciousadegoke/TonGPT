@@ -166,7 +166,7 @@ def categorize_memecoins(memecoins):
     return categories
 
 async def check_user_credits(user_id, credits_needed=1):
-    """Check and consume user credits — fail-closed"""
+    """Check if user has enough credits — fail-closed. Does NOT deduct."""
     if not redis_client:
         logger.warning("Redis unavailable — denying credit check (fail-closed)")
         return False
@@ -188,12 +188,33 @@ async def check_user_credits(user_id, credits_needed=1):
         if usage + credits_needed > limit:
             return False
             
-        redis_client.incrby(usage_key, credits_needed)
         return True
         
     except Exception as e:
         logger.error(f"Credit check error: {e}")
         return False  # Fail-closed: deny on error
+
+
+async def deduct_user_credits(user_id, credits_needed=1):
+    """Deduct credits after successful operation. Call only on confirmed success."""
+    if not redis_client:
+        return
+    try:
+        usage_key = f"usage_today:{user_id}"
+        redis_client.incrby(usage_key, credits_needed)
+    except Exception as e:
+        logger.error(f"Credit deduction error: {e}")
+
+
+async def refund_user_credits(user_id, credits_needed=1):
+    """Refund credits on failure after deduction."""
+    if not redis_client:
+        return
+    try:
+        usage_key = f"usage_today:{user_id}"
+        redis_client.decrby(usage_key, credits_needed)
+    except Exception as e:
+        logger.error(f"Credit refund error: {e}")
 
 async def check_rate_limit(user_id, tier="free"):
     """Check user rate limits — fail-closed"""
@@ -569,57 +590,9 @@ async def scan_command(message: types.Message):
             logger.error(f"Error in scan command: {e}")
             await message.reply("❌ Scan service temporarily unavailable.")
 
-@router.message(Command("ask"))
-async def ask_command(message: types.Message):
-    """Enhanced ask command with credit consumption and rate limiting"""
-    user_id = message.from_user.id
-    
-    # Determine user tier
-    user_tier = "free"
-    try:
-        status = await engine_client.get_user_status(str(user_id))
-        user_tier = status.get("plan", "Free").lower()
-    except Exception:
-        pass
-    
-    async with monitor_request("bot_command_ask", user_id, user_tier):
-        try:
-            # Check and consume credits
-            can_use = await check_user_credits(user_id, 1)
-            if not can_use:
-                await message.reply(
-                    "❌ <b>Insufficient Credits</b>\n\n"
-                    "You've run out of credits for AI queries.\n"
-                    "Use /subscription to check your plan or /upgrade for more credits!",
-                    parse_mode="HTML"
-                )
-                return
-            
-            # Check rate limits
-            if not await check_rate_limit(user_id, user_tier):
-                await message.reply(
-                    "⏰ You've reached your message limit. "
-                    "Upgrade to premium for unlimited messages!"
-                )
-                return
-            
-            # Try to import and use GPT handler
-            try:
-                from handlers.gpt_reply import handle_gpt_query
-                await handle_gpt_query(message)
-                log_user_action(user_id, "ask_command", True, {"tier": user_tier})
-                
-            except ImportError:
-                logger.warning("GPT handler not available")
-                await message.reply(
-                    "🤖 AI features are currently being initialized.\n"
-                    "Please try again in a moment."
-                )
-                
-        except Exception as e:
-            log_user_action(user_id, "ask_command", False, {"tier": user_tier, "error": str(e)})
-            logger.error(f"Ask command error: {e}")
-            await message.reply("❌ AI service temporarily unavailable.")
+# NOTE: /ask command handler has been REMOVED from bot/commands.py (C-1 fix)
+# All GPT reply routing lives exclusively in handlers/gpt_reply.py
+# This prevents dual router conflicts (double responses, double AI calls)
 
 @router.message(Command("info"))
 @monitor_function("bot_command_info")
@@ -972,15 +945,9 @@ async def chat_handler(message: types.Message):
             )
             logger.error(f"Chat handler error: {e}")
 
-@router.message()
-async def handle_text_message(message: types.Message):
-    """Handle non-command text messages"""
-    # Skip if message is a command
-    if message.text and message.text.startswith('/'):
-        return
-    
-    # Handle as chat message
-    await chat_handler_wrapper(message)
+# NOTE: Catch-all @router.message() handler has been REMOVED from bot/commands.py (C-1 fix)
+# All non-command message handling lives exclusively in handlers/gpt_reply.py
+# This prevents dual router conflicts (double responses, double AI calls)
 
 # ==================== REGISTRATION FUNCTIONS ====================
 

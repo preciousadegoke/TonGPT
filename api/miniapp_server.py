@@ -22,7 +22,7 @@ from services.analysis import analyze_token_ai, analyze_wallet_ai, calculate_ris
 
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 
 def verify_telegram_init_data(init_data: str) -> dict:
@@ -398,8 +398,8 @@ async def authenticate_wallet(request: Request, data: dict):
     
     # Parse proof
     try:
-        proof = json.loads(proof_json)
-    except json.JSONDecodeError:
+        proof = _json.loads(proof_json)
+    except _json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid proof format")
     
     # Validate proof structure

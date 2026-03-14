@@ -106,6 +106,22 @@ class SafeRedisClient:
             except Exception as e:
                 logger.error(f"Redis INCR error: {e}")
         return 0
+
+    def incrby(self, key: str, amount: int) -> int:
+        if self.client:
+            try:
+                return self.client.incrby(key, amount)
+            except Exception as e:
+                logger.error(f"Redis INCRBY error: {e}")
+        return 0
+
+    def decrby(self, key: str, amount: int) -> int:
+        if self.client:
+            try:
+                return self.client.decrby(key, amount)
+            except Exception as e:
+                logger.error(f"Redis DECRBY error: {e}")
+        return 0
     
     def incrbyfloat(self, key: str, amount: float):
         if self.client:

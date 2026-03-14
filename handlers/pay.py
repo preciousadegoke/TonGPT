@@ -221,11 +221,11 @@ async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
     """Handle pre-checkout validation"""
     payload = pre_checkout_query.invoice_payload
     
-    if payload.startswith("premium_"):
-        plan_key = payload.split("premium_")[-1]
-        if plan_key in PLANS:
-            await pre_checkout_query.answer(ok=True)
-            return
+    # Strip premium_ prefix if present, but validate ALL payloads
+    plan_key = payload.split("premium_")[-1] if payload.startswith("premium_") else payload
+    if plan_key in PLANS:
+        await pre_checkout_query.answer(ok=True)
+        return
     
     await pre_checkout_query.answer(
         ok=False, 
@@ -238,57 +238,59 @@ async def successful_payment_handler(message: Message):
     user_id = message.from_user.id
     payment = message.successful_payment
     
-    if payment.invoice_payload.startswith("premium_"):
-        raw_plan_key = payment.invoice_payload.split("premium_")[-1]
-        try:
-            validated_plan = await validate_payment_amount(
-                raw_plan_key, payment.total_amount, payment.currency
-            )
-        except ValueError as e:
-            logger.error(f"Payment validation failed for user {user_id}: {e}")
-            await message.reply(
-                "⚠️ Payment underpaid or invalid. No activation was performed. Please contact support.",
-                parse_mode="HTML",
-            )
-            return
+    # Strip premium_ prefix if present, but validate ALL payloads
+    raw_payload = payment.invoice_payload
+    raw_plan_key = raw_payload.split("premium_")[-1] if raw_payload.startswith("premium_") else raw_payload
+    
+    try:
+        validated_plan = await validate_payment_amount(
+            raw_plan_key, payment.total_amount, payment.currency
+        )
+    except ValueError as e:
+        logger.error(f"Payment validation failed for user {user_id}: {e}")
+        await message.reply(
+            "⚠️ Payment underpaid or invalid. No activation was performed. Please contact support.",
+            parse_mode="HTML",
+        )
+        return
 
-        plan_key = validated_plan
-        plan = PLANS.get(plan_key)
+    plan_key = validated_plan
+    plan = PLANS.get(plan_key)
+    
+    if plan:
+        charge_id = getattr(payment, "telegram_payment_charge_id", None) or str(payment.total_amount)
+        await activate_payment_idempotent(user_id=user_id, charge_id=charge_id, plan_key=plan_key)
+
+        # Track revenue
+        stars_received = payment.total_amount // 100
+        redis_client.incrbyfloat("revenue_stars", stars_received)
+        redis_client.incrbyfloat(f"revenue_{plan_key}", stars_received)
         
-        if plan:
-            charge_id = getattr(payment, "telegram_payment_charge_id", None) or str(payment.total_amount)
-            await activate_payment_idempotent(user_id=user_id, charge_id=charge_id, plan_key=plan_key)
-
-            # Track revenue
-            stars_received = payment.total_amount // 100
-            redis_client.incrbyfloat("revenue_stars", stars_received)
-            redis_client.incrbyfloat(f"revenue_{plan_key}", stars_received)
-            
-            # Send confirmation
-            confirmation_msg = (
-                f"✅ <b>Payment Successful!</b>\n\n"
-                f"🎯 <b>Plan:</b> {plan['name']}\n"
-                f"⏱️ <b>Duration:</b> {plan['duration_days']} days\n"
-                f"💫 <b>Paid:</b> {stars_received} Telegram Stars\n\n"
-                f"🚀 <b>Your new features:</b>\n"
-            )
-            
-            for feature in plan['features']:
-                confirmation_msg += f"• {feature}\n"
-            
-            confirmation_msg += (
-                f"\n💡 <b>Try these commands:</b>\n"
-                f"/scan - Enhanced token analysis\n"
-                f"/whale - Premium whale alerts\n"
-                f"/portfolio - Track your holdings\n"
-                f"/status - Check your subscription\n\n"
-                f"🎉 Welcome to TonGPT Premium!"
-            )
-            
-            await message.reply(confirmation_msg, parse_mode="HTML")
-            
-            # Log the successful payment
-            logger.info(f"Premium activated: User {user_id}, Plan {plan_key}, Stars {stars_received}")
+        # Send confirmation
+        confirmation_msg = (
+            f"✅ <b>Payment Successful!</b>\n\n"
+            f"🎯 <b>Plan:</b> {plan['name']}\n"
+            f"⏱️ <b>Duration:</b> {plan['duration_days']} days\n"
+            f"💫 <b>Paid:</b> {stars_received} Telegram Stars\n\n"
+            f"🚀 <b>Your new features:</b>\n"
+        )
+        
+        for feature in plan['features']:
+            confirmation_msg += f"• {feature}\n"
+        
+        confirmation_msg += (
+            f"\n💡 <b>Try these commands:</b>\n"
+            f"/scan - Enhanced token analysis\n"
+            f"/whale - Premium whale alerts\n"
+            f"/portfolio - Track your holdings\n"
+            f"/status - Check your subscription\n\n"
+            f"🎉 Welcome to TonGPT Premium!"
+        )
+        
+        await message.reply(confirmation_msg, parse_mode="HTML")
+        
+        # Log the successful payment
+        logger.info(f"Premium activated: User {user_id}, Plan {plan_key}, Stars {stars_received}")
 
 # TON Payment Handler
 @router.callback_query(lambda c: c.data == "pay_ton")

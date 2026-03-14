@@ -74,8 +74,8 @@ class SecurityManager:
         """Verify webhook signature from payment providers"""
         try:
             expected = hmac.new(
-                secret.encode(),
-                payload,
+                secret.encode() if isinstance(secret, str) else secret,
+                payload if isinstance(payload, bytes) else payload.encode(),
                 hashlib.sha256
             ).hexdigest()
             
@@ -97,8 +97,8 @@ class SecurityManager:
         if not payment_secret:
             raise ValueError("PAYMENT_SECRET environment variable must be set")
         token = hmac.new(
-            payment_secret.encode(),
-            data.encode(),
+            payment_secret.encode() if isinstance(payment_secret, str) else payment_secret,
+            data.encode() if isinstance(data, str) else data,
             hashlib.sha256
         ).hexdigest()
         
@@ -118,8 +118,8 @@ class SecurityManager:
                 raise ValueError("PAYMENT_SECRET environment variable must be set")
             data = f"{user_id}:{amount}:{tier}:{timestamp}"
             actual_token = hmac.new(
-                payment_secret.encode(),
-                data.encode(),
+                payment_secret.encode() if isinstance(payment_secret, str) else payment_secret,
+                data.encode() if isinstance(data, str) else data,
                 hashlib.sha256
             ).hexdigest()
             

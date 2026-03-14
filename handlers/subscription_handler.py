@@ -11,6 +11,9 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 from services.engine_client import engine_client
+from core.config import load_config
+
+config = load_config()
 
 router = Router()
 
@@ -112,7 +115,7 @@ async def start_upgrade(message: types.Message, state: FSMContext):
     # We don't need to set state here as pay.py handles the callbacks gracefully without state
     # await state.set_state(SubscriptionStates.choosing_tier)
 
-def register_subscription_handlers(dp, config, redis_client):
+def register_subscription_handlers(dp, config=None, redis_client=None):
     """Register subscription handlers"""
     # Redis client passed but handled via Engine mostly now
     dp.include_router(router)

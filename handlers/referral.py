@@ -20,7 +20,7 @@ router = Router()
 REFERRAL_MIN_AGE_SECONDS = 86400   # 24 hours
 REFERRAL_MIN_COMMANDS = 3          # minimum interactions
 
-REFERRAL_SECRET = os.environ["REFERRAL_SECRET"]
+REFERRAL_SECRET = os.getenv("REFERRAL_SECRET", "")
 
 # ── helpers ──────────────────────────────────────────────────────────
 
@@ -109,11 +109,9 @@ async def validate_pending_referral(user_id: int):
 
 
 def generate_referral_token(referrer_id: int) -> str:
-    sig = hmac.new(
-        REFERRAL_SECRET.encode(),
-        str(referrer_id).encode(),
-        hashlib.sha256,
-    ).hexdigest()[:16]
+    key = REFERRAL_SECRET.encode() if isinstance(REFERRAL_SECRET, str) else REFERRAL_SECRET
+    msg = str(referrer_id).encode()
+    sig = hmac.new(key, msg, hashlib.sha256).hexdigest()[:16]
     return f"{referrer_id}_{sig}"
 
 
@@ -121,11 +119,9 @@ def verify_referral_token(token: str) -> int | None:
     try:
         referrer_id_str, sig = token.rsplit("_", 1)
         referrer_id = int(referrer_id_str)
-        expected = hmac.new(
-            REFERRAL_SECRET.encode(),
-            str(referrer_id).encode(),
-            hashlib.sha256,
-        ).hexdigest()[:16]
+        key = REFERRAL_SECRET.encode() if isinstance(REFERRAL_SECRET, str) else REFERRAL_SECRET
+        msg = str(referrer_id).encode()
+        expected = hmac.new(key, msg, hashlib.sha256).hexdigest()[:16]
         if hmac.compare_digest(sig, expected):
             return referrer_id
     except Exception:

@@ -252,34 +252,82 @@ async def whale_config(message: types.Message):
 # Callback handlers
 @router.callback_query(lambda c: c.data == "whale_refresh")
 async def whale_refresh_callback(callback_query: types.CallbackQuery):
-    """Refresh whale data"""
+    """Refresh whale data — calls shared logic directly instead of constructing a fake Message"""
     await callback_query.answer("🔄 Refreshing whale data...")
-    # Create a new message object with the callback query's message content
-    new_message = types.Message(
-        message_id=callback_query.message.message_id,
-        from_user=callback_query.from_user,
-        date=callback_query.message.date,
-        chat=callback_query.message.chat,
-        content_type='text',
-        options={'text': '/whale'},
-        bot=callback_query.bot
-    )
-    await whale_alerts(new_message)
+    try:
+        user_id = callback_query.from_user.id
+        has_premium = await get_user_premium_status(redis_client, engine_client, user_id)
+        status = await engine_client.get_user_status(str(user_id))
+        user_plan = (status.get("plan") or "Free").lower()
+
+        display_limit = get_display_limit_for_plan(user_plan)
+        min_amount = get_whale_threshold_for_plan(user_plan)
+
+        transactions = await get_large_transactions(limit=20, min_amount=min_amount)
+
+        if not transactions:
+            no_data_msg = format_no_whale_data_message(user_plan, min_amount, has_premium)
+            await callback_query.message.edit_text(no_data_msg, parse_mode="HTML")
+            return
+
+        response_msg = await format_whale_alerts_response(
+            transactions[:display_limit], user_plan, has_premium, display_limit
+        )
+        keyboard = create_whale_action_keyboard(has_premium, user_plan)
+        await callback_query.message.edit_text(response_msg, parse_mode="HTML", reply_markup=keyboard)
+
+        if has_premium:
+            redis_client.incr(f"whale_usage:{user_id}")
+
+    except Exception as e:
+        logger.error(f"Whale refresh callback error: {e}")
+        await callback_query.message.edit_text(
+            "⚠️ <b>Could not refresh whale data.</b>\nPlease try /whale again.",
+            parse_mode="HTML",
+        )
 
 @router.callback_query(lambda c: c.data == "whale_summary_24h")
 async def whale_summary_callback(callback_query: types.CallbackQuery):
-    """Show 24h whale summary"""
+    """Show 24h whale summary — calls shared logic directly instead of constructing a fake Message"""
     await callback_query.answer("📊 Loading 24h summary...")
-    new_message = types.Message(
-        message_id=callback_query.message.message_id,
-        from_user=callback_query.from_user,
-        date=callback_query.message.date,
-        chat=callback_query.message.chat,
-        content_type='text',
-        options={'text': '/whale_summary'},
-        bot=callback_query.bot
-    )
-    await whale_summary(new_message)
+    try:
+        user_id = callback_query.from_user.id
+        has_premium = await get_user_premium_status(redis_client, engine_client, user_id)
+        if not has_premium:
+            await callback_query.message.edit_text(
+                "❌ <b>Premium Feature Required</b>\n\nUse /subscribe to unlock whale summaries.",
+                parse_mode="HTML",
+            )
+            return
+
+        status = await engine_client.get_user_status(str(user_id))
+        user_plan = (status.get("plan") or "Free").lower()
+
+        summary_24h = await get_whale_summary(hours=24)
+        summary_7d = None
+        if user_plan in ['pro_plus', 'elite']:
+            summary_7d = await get_whale_summary(hours=168)
+
+        if not summary_24h or summary_24h.get('total_transactions', 0) == 0:
+            await callback_query.message.edit_text(
+                f"📊 <b>WHALE ACTIVITY SUMMARY</b> — {user_plan.title()}\n\n"
+                f"No significant whale activity in the last 24 hours.",
+                parse_mode="HTML",
+            )
+            return
+
+        response_msg = await format_whale_summary_response(summary_24h, summary_7d, user_plan)
+        keyboard = create_summary_action_keyboard(user_plan)
+        await callback_query.message.edit_text(response_msg, parse_mode="HTML", reply_markup=keyboard)
+
+        redis_client.incr(f"whale_summary_usage:{user_id}")
+
+    except Exception as e:
+        logger.error(f"Whale summary callback error: {e}")
+        await callback_query.message.edit_text(
+            "⚠️ <b>Could not load whale summary.</b>\nPlease try /whale_summary again.",
+            parse_mode="HTML",
+        )
 
 @router.callback_query(lambda c: c.data == "whale_settings")
 async def whale_settings_callback(callback_query: types.CallbackQuery):

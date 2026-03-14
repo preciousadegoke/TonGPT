@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.EntityFrameworkCore;
 using TonGPT.Engine.Data;
 using System;
@@ -18,21 +19,47 @@ namespace TonGPT.Engine.Services
         private readonly IServiceProvider _serviceProvider;
         private readonly ILogger<SubscriptionWorker> _logger;
         private readonly IHttpClientFactory _httpClientFactory;
-        
-        // Subscription Contract Address (Replace with your actual deployed address)
-        private const string CONTRACT_ADDRESS = "EQD..."; // TODO: Update after deployment
-        private const string TON_API_URL = "https://testnet.toncenter.com/api/v2/runGetMethod";
+        private readonly IConfiguration _config;
 
-        public SubscriptionWorker(IServiceProvider serviceProvider, ILogger<SubscriptionWorker> logger, IHttpClientFactory httpClientFactory)
+        public SubscriptionWorker(
+            IServiceProvider serviceProvider,
+            ILogger<SubscriptionWorker> logger,
+            IHttpClientFactory httpClientFactory,
+            IConfiguration config)
         {
             _serviceProvider = serviceProvider;
             _logger = logger;
             _httpClientFactory = httpClientFactory;
+            _config = config;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             _logger.LogInformation("Subscription Worker is starting.");
+
+            // C-16: Startup guard — refuse to poll a placeholder or missing contract address
+            var contractAddress = _config["TonCenter:SubscriptionContractAddress"];
+            if (string.IsNullOrWhiteSpace(contractAddress) || contractAddress.StartsWith("EQD..."))
+            {
+                _logger.LogCritical(
+                    "SubscriptionContractAddress is not configured or is a placeholder. " +
+                    "Subscription polling disabled. Set TonCenter:SubscriptionContractAddress in appsettings.json.");
+                return;
+            }
+
+            // C-15: Read TON API URL from configuration instead of hardcoding testnet
+            var tonApiUrl = _config["TonCenter:Url"];
+            if (string.IsNullOrWhiteSpace(tonApiUrl))
+            {
+                _logger.LogCritical(
+                    "TonCenter:Url is not configured. Subscription polling disabled. " +
+                    "Set TonCenter:Url in appsettings.json.");
+                return;
+            }
+
+            _logger.LogInformation(
+                "Subscription Worker configured: Contract={ContractAddress}, API={ApiUrl}",
+                contractAddress, tonApiUrl);
 
             while (!stoppingToken.IsCancellationRequested)
             {
@@ -49,7 +76,7 @@ namespace TonGPT.Engine.Services
 
                         foreach (var user in usersWithWallets)
                         {
-                            await CheckUserSubscription(user, context);
+                            await CheckUserSubscription(user, context, contractAddress, tonApiUrl);
                         }
                         
                         await context.SaveChangesAsync(stoppingToken); // Bulk save after updates
@@ -65,7 +92,9 @@ namespace TonGPT.Engine.Services
             }
         }
 
-        private async Task CheckUserSubscription(User user, AppDbContext context)
+        private async Task CheckUserSubscription(
+            User user, AppDbContext context,
+            string contractAddress, string tonApiUrl)
         {
              if (string.IsNullOrEmpty(user.WalletAddress)) return;
 
@@ -74,12 +103,12 @@ namespace TonGPT.Engine.Services
                  var client = _httpClientFactory.CreateClient();
                  var payload = new 
                  {
-                     address = CONTRACT_ADDRESS,
+                     address = contractAddress,
                      method = "getSubscription",
                      stack = new object[] { new object[] { "tvm.Slice", user.WalletAddress } }
                  };
 
-                 var response = await client.PostAsJsonAsync(TON_API_URL, payload);
+                 var response = await client.PostAsJsonAsync(tonApiUrl, payload);
                  
                  if (response.IsSuccessStatusCode)
                  {
