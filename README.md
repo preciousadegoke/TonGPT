@@ -6,7 +6,9 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Build: Passing](https://img.shields.io/badge/Build-Passing-brightgreen.svg)
 
-TonGPT is a production-hardened AI intelligence agent built exclusively for the TON ecosystem, delivering live memecoin analytics, whale tracking, and on-chain insights via a dual Telegram Bot and Web Mini App interface. Designed for the TON AI Agent Hackathon 2026, it replaces generic LLM halluncination with hard data pipelines from TON API, DexScreener, and STON.fi. Rather than bolting AI onto a standard bot, TonGPT’s core is a context-aware OpenRouter GPT engine safeguarded by financial guardrails, backed by a C# infrastructure layer, and monetized via native Tact smart contracts.
+**🏆 TON AI Agent Hackathon 2026 — Track: User-Facing Agents**
+
+TonGPT is a production-hardened AI intelligence agent built exclusively for the TON ecosystem, delivering live memecoin analytics, whale tracking, and on-chain insights via a dual Telegram Bot and Web Mini App interface. Designed for the Hackathon, it replaces generic LLM hallucination with hard data pipelines from TON API, DexScreener, and STON.fi. Rather than bolting AI onto a standard bot, TonGPT’s core is a context-aware OpenRouter GPT engine safeguarded by financial guardrails, backed by a C# infrastructure layer, and monetized via native Tact smart contracts.
 
 ---
 
@@ -145,9 +147,15 @@ TONGPT/
 ```bash
 git clone https://github.com/preciousadegoke/TonGPT.git
 cd TonGPT
-cp .env.example .env
 ```
-Ensure the `.env` contains `BOT_TOKEN`, `OPENAI_API_KEY` or `OPENROUTER_API_KEY`, `TONAPI_KEY`, and a highly randomized 32-character `REFERRAL_SECRET`.
+Create a `.env` file in the root directory containing these required variables:
+- `BOT_TOKEN`: From Telegram @BotFather
+- `OPENROUTER_API_KEY` (or `OPENAI_API_KEY`): For the AI Engine
+- `TONAPI_KEY`: For unlimited query routing (Optional but recommended)
+- `ENGINE_API_KEY`: A secure key to authenticate engine calls
+- `REFERRAL_SECRET`: A highly randomized 32-character hex key
+- `CORS_ALLOWED_ORIGINS`: Origins for miniapp integration (e.g. `*` for dev)
+- `PAYMENT_WALLET_ADDRESS`: Your TON wallet address for receiving payments
 
 **2. Compile Contracts (Optional)**
 ```bash
@@ -182,9 +190,9 @@ TonGPT passed a comprehensive security audit ensuring enterprise-grade protectio
 ## 🗺 Roadmap
 
 Derived from current code stubs and ongoing implementations:
-- Deploy the Tact subscription contract on Mainnet.
-- Upgrade to full FAISS-backed persistent conversation state mapping.
-- Finish Admin analytics tools and unified Twitter (X) influencer sentiment analysis flows.
+- **Deploy the Tact subscription contract on Mainnet.** This formalizes the TON economy natively by ensuring non-custodial, peer-to-peer SaaS payment channeling.
+- **Upgrade to full FAISS-backed persistent conversation state mapping.** Creating permanent semantic memory expands TonGPT from a stateless query bot into a long-term reliable AI partner for users making ongoing ecosystem decisions.
+- **Finish Admin analytics tools and unified Twitter (X) influencer sentiment analysis flows.** Integrating social intelligence with on-chain volume provides users with a comprehensive, institutional-grade trading perspective unavailable in standard TON apps.
 
 ---
 
