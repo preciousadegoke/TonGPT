@@ -12,11 +12,9 @@ TonGPT is a production-hardened AI intelligence agent built exclusively for the 
 
 ---
 
-## 🚀 Live Demo
+## 🚀 Deployment Status
 
-- **Telegram Bot**: [@TonGPTBot] *(Placeholder)*
-- **Mini App**: Available via `/app` command inside the bot.
-- *Screenshot / GIF Demo: `![TonGPT Live Demo](docs/demo_placeholder.gif)`*
+TonGPT is currently in the final staging pipeline for the TON AI Agent Hackathon 2026. The bot, API engine, and mini-app are fully operational locally and are undergoing final Mainnet integration testing before public release.
 
 ---
 
@@ -52,7 +50,7 @@ TonGPT leverages a distributed microservice architecture, separating the convers
 ┌────────┴────────┐       ┌───────▼─────────┐       ┌────────▼────────┐
 │                 │       │                 │       │  TON API /      │
 │  Web Mini App   │◄─────►│ C# .NET Engine  │◄─────►│  STON.fi /      │
-│  (Vue/Vanilla UI)       │ (PostgreSQL/DB) │       │  DexScreener    │
+│(Vue/Vanilla UI) │       │ (PostgreSQL/DB) │       │  DexScreener    │
 │                 │       │                 │       └────────┬────────┘
 └─────────────────┘       └─────────────────┘                │
          ▲                        ▲                          │
@@ -178,6 +176,8 @@ Once running, open Telegram:
 ---
 
 ## 🛡 Security & Audit
+
+A structured 3-session audit identified and resolved 70 vulnerabilities across the Python bot, C# engine, and Tact contract codebases — covering payment validation, XSS, SQL injection, hardcoded secrets, and authentication weaknesses.
 
 TonGPT passed a comprehensive security audit ensuring enterprise-grade protection:
 - **Zero Fail-Open Paths:** Redis failures downgrade gracefully into local memory cache without halting core services or bypassing credit checks.
