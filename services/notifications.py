@@ -90,25 +90,6 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Failed to cleanup old notifications: {e}")
 
-
-async def cleanup_old_notifications(db_path: str = "notifications.db", retention_days: int = 30):
-    """Async wrapper to cleanup old notifications using the shared SQLite database."""
-    svc = NotificationService()
-    try:
-        svc.cleanup_old_notifications(days=retention_days)
-    except Exception as e:
-        logger.error(f"Async cleanup failed: {e}")
-
-
-async def notification_cleanup_loop(retention_days: int = 30, interval_seconds: int = 86400):
-    """Periodic cleanup task for notification history."""
-    while True:
-        try:
-            await cleanup_old_notifications(retention_days=retention_days)
-        except Exception as e:
-            logger.error(f"Cleanup failed: {e}")
-        await asyncio.sleep(interval_seconds)
-
     def init_database(self):
         """Initialize SQLite database for notification settings"""
         try:
@@ -676,6 +657,24 @@ def check_service_health() -> Dict:
             'status': 'error',
             'error': str(e)
         }
+
+async def cleanup_old_notifications(retention_days: int = 30) -> None:
+    """Async wrapper to cleanup old notifications using the shared service instance."""
+    try:
+        notification_service.cleanup_old_notifications(days=retention_days)
+    except Exception as e:
+        logger.error(f"Async cleanup failed: {e}")
+
+
+async def notification_cleanup_loop(retention_days: int = 30, interval_seconds: int = 86400) -> None:
+    """Periodic cleanup task for notification history."""
+    while True:
+        try:
+            await cleanup_old_notifications(retention_days=retention_days)
+        except Exception as e:
+            logger.error(f"Cleanup failed: {e}")
+        await asyncio.sleep(interval_seconds)
+
 
 # Usage example and testing
 async def main():

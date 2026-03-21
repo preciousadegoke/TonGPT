@@ -766,14 +766,14 @@ export function storeSubscriptionData(src: SubscriptionData) {
     return (builder: Builder) => {
         const b_0 = builder;
         b_0.storeUint(src.tier, 8);
-        b_0.storeUint(src.expiresAt, 32);
+        b_0.storeUint(src.expiresAt, 64);
     };
 }
 
 export function loadSubscriptionData(slice: Slice) {
     const sc_0 = slice;
     const _tier = sc_0.loadUintBig(8);
-    const _expiresAt = sc_0.loadUintBig(32);
+    const _expiresAt = sc_0.loadUintBig(64);
     return { $$type: 'SubscriptionData' as const, tier: _tier, expiresAt: _expiresAt };
 }
 
@@ -918,7 +918,7 @@ function initSubscription_init_args(src: Subscription_init_args) {
 }
 
 async function Subscription_init(owner: Address) {
-    const __code = Cell.fromHex('b5ee9c7241020b01000246000228ff008e88f4a413f4bcf2c80bed5320e303ed43d9010602037c780204013bb6a37da89a1a400032ff481e808b2d8252df4800203a2dbc4b1b678d843003004820c001973082103b9aca00e020c002973082112a05f200e0c00397821804a817c800e0700167b4b7fda89a1a400032ff481e808b2d8252df4800203a2dbc4b1b678d84240dd2460db3240dde5a100de44de05c440dd2460dbbd005003e81010b220259f40b6fa192306ddf206e92306d9ad0d307d31f596c126f02e203c63001d072d721d200d200fa4021103450666f04f86102f862ed44d0d2000197fa40f404596c1296fa400101d16de203925f03e07022d74920c21f953102d31f03de2182100ba69751bae302218210946a98b6bae30233c00002c12112b0e3025bf2c08207090a01b85b01fa00308200c13df84223c705f2f48042708824553010246d50436d03c8cf8580ca00cf8440ce01fa028069cf40025c6e016eb0935bcf819d58cf8680cf8480f400f400cf81e2f400c901fb0001c87f01ca005902cef400c9ed5408001c000000005769746864726177616c00885b01d33f30c8018210aff90f5758cb1fcb3fc912f84270705003804201503304c8cf8580ca00cf8440ce01fa02806acf40f400c901fb00c87f01ca005902cef400c9ed5400d4f8416f243032702282103b9aca00ba933031718e212282112a05f200ba933031728e1202821804a817c800ba92317394f2c06501e2e2e2f8238208278d00a00181010b02c85902cb07cb1fc9103412206e953059f45930944133f413e2c87f01ca005902cef400c9ed54245571de');
+    const __code = Cell.fromHex('b5ee9c72410210010002d4000114ff00f4a413f4bcf2c80b01020162020803c6d001d072d721d200d200fa4021103450666f04f86102f862ed44d0d2000197fa40f404596c1296fa400101d16de203925f03e07022d74920c21f953102d31f03de2182100ba69751bae302218210946a98b6bae30233c00002c12112b0e3025bf2c08203050601da5b01fa00308200c13df84223c705f2f48200d557f8276f1022820afaf080a0bef2f472708824553010246d50436d03c8cf8580ca00cf8440ce01fa028069cf40025c6e016eb0935bcf819d58cf8680cf8480f400f400cf81e2f400c901fb0001c87f01ca005902cef400c9ed5404001c000000005769746864726177616c00885b01d33f30c8018210aff90f5758cb1fcb3fc912f84270705003804201503304c8cf8580ca00cf8440ce01fa02806acf40f400c901fb00c87f01ca005902cef400c9ed5401fef8416f2430327022821804a817c800be933031738e202282112a05f200be933031728e110282103b9aca00be92317194f2c06501e2e2e2f823530481010b2559f40b6fa192306ddf206e92306d9ad0d307d33f596c126f02e2206eb39b6f22315203bc91309131e2923031e28208278d00a00181010b02c85902cb07cb3fc907003c103412206e953059f45930944133f413e2c87f01ca005902cef400c9ed54020120090b013bbe1b776a268690000cbfd207a022cb6094b7d200080e8b6f12c6d9e3610c0a005681010b220259f40b6fa192306ddf206e92306d9ad0d307d33f596c126f02e2206e923070e06f2231f823bc0201580c0e013bb6a37da89a1a400032ff481e808b2d8252df4800203a2dbc4b1b678d84300d004820c001973082103b9aca00e020c002973082112a05f200e0c00397821804a817c800e070015db4b7fda89a1a400032ff481e808b2d8252df4800203a2dbc4b1b678d84240dd2460db28de44de05c440dd2460dbbd00f003e81010b220259f40b6fa192306ddf206e92306d9ad0d307d33f596c126f02e2da51ff14');
     const builder = beginCell();
     builder.storeUint(0, 1);
     initSubscription_init_args({ $$type: 'Subscription_init_args', owner })(builder);
@@ -964,6 +964,7 @@ export const Subscription_errors = {
     136: { message: "Invalid standard address" },
     138: { message: "Not a basechain address" },
     49469: { message: "Access denied" },
+    54615: { message: "Insufficient balance" },
 } as const
 
 export const Subscription_errors_backward = {
@@ -1003,7 +1004,8 @@ export const Subscription_errors_backward = {
     "Code of a contract was not found": 135,
     "Invalid standard address": 136,
     "Not a basechain address": 138,
-    // "Access denied": 49469, // Removed duplicate
+    "Access denied (owner)": 49469,
+    "Insufficient balance": 54615,
 } as const
 
 const Subscription_types: ABIType[] = [
@@ -1020,7 +1022,7 @@ const Subscription_types: ABIType[] = [
     { "name": "Deploy", "header": 2490013878, "fields": [{ "name": "queryId", "type": { "kind": "simple", "type": "uint", "optional": false, "format": 64 } }] },
     { "name": "DeployOk", "header": 2952335191, "fields": [{ "name": "queryId", "type": { "kind": "simple", "type": "uint", "optional": false, "format": 64 } }] },
     { "name": "FactoryDeploy", "header": 1829761339, "fields": [{ "name": "queryId", "type": { "kind": "simple", "type": "uint", "optional": false, "format": 64 } }, { "name": "cashback", "type": { "kind": "simple", "type": "address", "optional": false } }] },
-    { "name": "SubscriptionData", "header": null, "fields": [{ "name": "tier", "type": { "kind": "simple", "type": "uint", "optional": false, "format": 8 } }, { "name": "expiresAt", "type": { "kind": "simple", "type": "uint", "optional": false, "format": 32 } }] },
+    { "name": "SubscriptionData", "header": null, "fields": [{ "name": "tier", "type": { "kind": "simple", "type": "uint", "optional": false, "format": 8 } }, { "name": "expiresAt", "type": { "kind": "simple", "type": "uint", "optional": false, "format": 64 } }] },
     { "name": "Withdraw", "header": 195467089, "fields": [{ "name": "amount", "type": { "kind": "simple", "type": "uint", "optional": false, "format": "coins" } }] },
     { "name": "Subscription$Data", "header": null, "fields": [{ "name": "owner", "type": { "kind": "simple", "type": "address", "optional": false } }, { "name": "subscriptions", "type": { "kind": "dict", "key": "address", "value": "SubscriptionData", "valueFormat": "ref" } }] },
 ]
@@ -1034,11 +1036,13 @@ const Subscription_opcodes = {
 
 const Subscription_getters: ABIGetter[] = [
     { "name": "getSubscription", "methodId": 124351, "arguments": [{ "name": "user", "type": { "kind": "simple", "type": "address", "optional": false } }], "returnType": { "kind": "simple", "type": "SubscriptionData", "optional": true } },
+    { "name": "isActive", "methodId": 82798, "arguments": [{ "name": "user", "type": { "kind": "simple", "type": "address", "optional": false } }], "returnType": { "kind": "simple", "type": "bool", "optional": false } },
     { "name": "price", "methodId": 120091, "arguments": [{ "name": "tier", "type": { "kind": "simple", "type": "int", "optional": false, "format": 257 } }], "returnType": { "kind": "simple", "type": "int", "optional": false, "format": 257 } },
 ]
 
 export const Subscription_getterMapping: { [key: string]: string } = {
     'getSubscription': 'getGetSubscription',
+    'isActive': 'getIsActive',
     'price': 'getPrice',
 }
 
@@ -1048,13 +1052,14 @@ const Subscription_receivers: ABIReceiver[] = [
     { "receiver": "internal", "message": { "kind": "typed", "type": "Deploy" } },
 ]
 
+export const TIER_STARTER = 1000000000n;
+export const TIER_PRO = 5000000000n;
+export const TIER_WHALE = 20000000000n;
+export const DURATION = 2592000n;
+export const MIN_RESERVE = 50000000n;
 
 export class Subscription implements Contract {
 
-    public static readonly TIER_STARTER = 1000000000n;
-    public static readonly TIER_PRO = 5000000000n;
-    public static readonly TIER_WHALE = 20000000000n;
-    public static readonly DURATION = 2592000n;
     public static readonly storageReserve = 0n;
     public static readonly errors = Subscription_errors_backward;
     public static readonly opcodes = Subscription_opcodes;
@@ -1111,6 +1116,14 @@ export class Subscription implements Contract {
         const source = (await provider.get('getSubscription', builder.build())).stack;
         const result_p = source.readTupleOpt();
         const result = result_p ? loadTupleSubscriptionData(result_p) : null;
+        return result;
+    }
+
+    async getIsActive(provider: ContractProvider, user: Address) {
+        const builder = new TupleBuilder();
+        builder.writeAddress(user);
+        const source = (await provider.get('isActive', builder.build())).stack;
+        const result = source.readBoolean();
         return result;
     }
 

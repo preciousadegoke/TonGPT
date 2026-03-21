@@ -17,7 +17,7 @@ async def monitor_followed_wallets():
         try:
             addresses = redis_client.smembers("tracked_addresses") if redis_client else set()
             for address in addresses:
-                transactions = get_recent_transactions(address)
+                transactions = await get_recent_transactions(address)
                 for tx in transactions:
                     if is_large_transaction(tx):  # > $1,000
                         await notify_followers(address, tx)

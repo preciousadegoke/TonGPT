@@ -1,34 +1,16 @@
 import "@stdlib/deploy";
-
-// ----------------------------------------------------------------------------------------------------
-// Structs & Messages
-// ----------------------------------------------------------------------------------------------------
-
-struct SubscriptionData {
-    tier: Int as uint8;
-    expiresAt: Int as uint32;
-}
-
-message Withdraw {
-    amount: Int as coins;
-}
+import "./constants.tact";
+import "./types.tact";
 
 // ----------------------------------------------------------------------------------------------------
 // Smart Contract Logic
 // ----------------------------------------------------------------------------------------------------
 
 contract Subscription with Deployable {
-    
+
     // State Variables
     owner: Address;
-    subscriptions: map<Address, SubscriptionData>; // The On-Chain Ledger
-
-    // Constants (Premium Pricing)
-    const TIER_STARTER: Int = 1000000000;  // 1.0 TON
-    const TIER_PRO: Int = 5000000000;      // 5.0 TON
-    const TIER_WHALE: Int = 20000000000;   // 20.0 TON
-    
-    const DURATION: Int = 2592000; // 30 Days
+    subscriptions: map<Address, SubscriptionData>;
 
     // Init
     init(owner: Address) {
@@ -40,69 +22,81 @@ contract Subscription with Deployable {
     // ------------------------------------------------------------------------------------------------
     receive() {
         let ctx: Context = context();
-        let amount: Int = ctx.value;
         let sender: Address = ctx.sender;
-        
+
+        // Range checks against top-level constants (no self. prefix)
         let tier: Int = 0;
 
-        // Exact Payment Match (Strict)
-        if (amount == self.TIER_STARTER) {
-            tier = 1;
-        } else if (amount == self.TIER_PRO) {
-            tier = 2;
-        } else if (amount == self.TIER_WHALE) {
+        if (ctx.value >= TIER_WHALE) {
             tier = 3;
+        } else if (ctx.value >= TIER_PRO) {
+            tier = 2;
+        } else if (ctx.value >= TIER_STARTER) {
+            tier = 1;
         } else {
-            // Invalid Amount -> Bounce/Refund
-            // Exit code 101: Invalid Subscription Amount
-            throw(101); 
+            throw(101);
         }
 
-        // Calculate Expiry
+        // Extend existing subscription rather than overwriting
         let current_time: Int = now();
-        let new_expiry: Int = current_time + self.DURATION;
+        let base_time: Int = current_time;
 
-        // Check existing subscription to extend (Optional: for now we just overwrite/reset)
-        // Future: let existing = self.subscriptions.get(sender); if (existing.expiresAt > now) ...
+        let existing: SubscriptionData? = self.subscriptions.get(sender);
+        if (existing != null) {
+            let existingData: SubscriptionData = existing!!;
+            if (existingData.expiresAt > current_time) {
+                base_time = existingData.expiresAt;
+            }
+        }
 
-        // Store State
+        let new_expiry: Int = base_time + DURATION;
+
         self.subscriptions.set(sender, SubscriptionData{
             tier: tier,
             expiresAt: new_expiry
         });
-
-        // Events? 
-        // We rely on Getters for state, but emitting events is still good practice for indexers.
-        // Tact events are expensive? No, let's keep it pure state for now as requested.
     }
 
     // ------------------------------------------------------------------------------------------------
     // Admin
     // ------------------------------------------------------------------------------------------------
-    
+
     receive(msg: Withdraw) {
         require(sender() == self.owner, "Access denied");
+
+        require(
+            myBalance() >= msg.amount + MIN_RESERVE,
+            "Insufficient balance"
+        );
+
         send(SendParameters{
             to: self.owner,
-            value: msg.amount, 
-            mode: SendRemainingValue + SendIgnoreErrors, 
+            value: msg.amount,
+            mode: SendIgnoreErrors,
             bounce: false,
             body: "Withdrawal".asComment()
         });
     }
 
     // ------------------------------------------------------------------------------------------------
-    // Getters ("The Source of Truth")
+    // Getters
     // ------------------------------------------------------------------------------------------------
 
     get fun getSubscription(user: Address): SubscriptionData? {
         return self.subscriptions.get(user);
     }
 
+    get fun isActive(user: Address): Bool {
+        let sub: SubscriptionData? = self.subscriptions.get(user);
+        if (sub == null) { return false; }
+        let subData: SubscriptionData = sub!!;
+        return subData.expiresAt > now();
+    }
+
     get fun price(tier: Int): Int {
-        if (tier == 1) { return self.TIER_STARTER; }
-        if (tier == 2) { return self.TIER_PRO; }
-        if (tier == 3) { return self.TIER_WHALE; }
+        if (tier == 1) { return TIER_STARTER; }
+        if (tier == 2) { return TIER_PRO; }
+        if (tier == 3) { return TIER_WHALE; }
         return 0;
     }
 }

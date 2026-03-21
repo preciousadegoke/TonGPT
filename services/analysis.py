@@ -17,144 +17,54 @@ except ImportError:
     REDIS_AVAILABLE = False
     redis = None
 
+from services.analysis_cache import cache_manager
+
 logger = logging.getLogger(__name__)
 
-# Enhanced Cache Manager (integrated into analysis.py)
-class CacheManager:
-    """Multi-layer cache manager with Redis and in-memory fallback"""
-    
-    def __init__(self, redis_url: Optional[str] = None):
-        self.redis_client = None
-        self.memory_cache = {}
-        self.cache_stats = {"hits": 0, "misses": 0, "errors": 0}
-        self.cache_ttls = {
-            "token_info": 180,    # 3 minutes
-            "whale_activity": 60,  # 1 minute
-            "wallet_info": 600,   # 10 minutes
-            "sentiment": 120,     # 2 minutes
-            "analysis": 900,      # 15 minutes
-            "default": 300        # 5 minutes
-        }
-        
-        if REDIS_AVAILABLE and redis_url:
-            try:
-                self.redis_client = redis.from_url(redis_url, decode_responses=True)
-                self.redis_client.ping()
-                logger.info("Redis cache initialized successfully")
-            except Exception as e:
-                logger.warning(f"Redis connection failed, using memory cache: {e}")
-        else:
-            logger.info("Using in-memory cache (Redis not available)")
-    
-    def _generate_cache_key(self, prefix: str, *args, **kwargs) -> str:
-        """Generate consistent cache keys"""
-        key_data = f"{prefix}:{str(args)}:{str(sorted(kwargs.items()))}"
-        return hashlib.md5(key_data.encode()).hexdigest()[:16]
-    
-    def get(self, key: str) -> Optional[Any]:
-        """Get data from cache"""
-        try:
-            # Try Redis first
-            if self.redis_client:
-                cached = self.redis_client.get(key)
-                if cached:
-                    self.cache_stats["hits"] += 1
-                    return json.loads(cached)
-            
-            # Fallback to memory cache
-            if key in self.memory_cache:
-                item = self.memory_cache[key]
-                if datetime.now() < item["expires"]:
-                    self.cache_stats["hits"] += 1
-                    return item["data"]
-                else:
-                    del self.memory_cache[key]
-            
-            self.cache_stats["misses"] += 1
-            return None
-            
-        except Exception as e:
-            logger.error(f"Cache get error for key {key}: {e}")
-            self.cache_stats["errors"] += 1
-            return None
-    
-    def set(self, key: str, data: Any, ttl: int = 300) -> bool:
-        """Set data in cache"""
-        try:
-            serialized = json.dumps(data, default=str)
-            
-            # Try Redis first
-            if self.redis_client:
-                self.redis_client.setex(key, ttl, serialized)
-            
-            # Always set in memory cache as backup
-            self.memory_cache[key] = {
-                "data": data,
-                "expires": datetime.now() + timedelta(seconds=ttl)
-            }
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Cache set error for key {key}: {e}")
-            self.cache_stats["errors"] += 1
-            return False
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """Get cache statistics"""
-        total_requests = self.cache_stats["hits"] + self.cache_stats["misses"]
-        hit_rate = (self.cache_stats["hits"] / total_requests * 100) if total_requests > 0 else 0
-        
-        return {
-            **self.cache_stats,
-            "hit_rate_percent": round(hit_rate, 2),
-            "memory_cache_size": len(self.memory_cache)
-        }
-
-# Global cache manager instance
-_cache_manager = None
-
-def initialize_cache(redis_url: Optional[str] = None):
-    """Initialize the cache manager"""
-    global _cache_manager
-    _cache_manager = CacheManager(redis_url)
-    return _cache_manager
-
-def get_cache_manager() -> CacheManager:
-    """Get or create cache manager"""
-    global _cache_manager
-    if _cache_manager is None:
-        _cache_manager = CacheManager()
-    return _cache_manager
 
 def cache_result(cache_type: str = "default", ttl: Optional[int] = None):
-    """Caching decorator for analysis functions"""
+    """Caching decorator for analysis functions (supports sync and async targets)."""
     def decorator(func: Callable) -> Callable:
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            cache_mgr = get_cache_manager()
-            cache_ttl = ttl or cache_mgr.cache_ttls.get(cache_type, 300)
-            cache_key = cache_mgr._generate_cache_key(f"{func.__name__}_{cache_type}", *args, **kwargs)
-            
-            # Try to get from cache
-            cached_result = cache_mgr.get(cache_key)
-            if cached_result is not None:
-                logger.debug(f"Cache hit for {func.__name__}")
-                return cached_result
-            
-            # Execute function
-            try:
-                result = func(*args, **kwargs)
-                # Cache successful results
-                cache_mgr.set(cache_key, result, cache_ttl)
-                logger.debug(f"Cached result for {func.__name__}")
+        if asyncio.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                cache_mgr = cache_manager
+                cache_ttl = ttl or cache_mgr.config.default_ttl
+                cache_key = cache_mgr._generate_cache_key(f"{func.__name__}_{cache_type}", *args, **kwargs)
+                cached = await cache_mgr.get(cache_key)
+                if cached is not None:
+                    logger.debug(f"[cache_result] HIT (async) for {func.__name__}")
+                    return cached
+                result = await func(*args, **kwargs)
+                await cache_mgr.set(cache_key, result, cache_ttl)
+                logger.debug(f"[cache_result] MISS -> cached (async) for {func.__name__}")
                 return result
-            except Exception as e:
-                logger.error(f"Function {func.__name__} failed: {e}")
-                raise
-        
-        return wrapper
+            return async_wrapper
+        else:
+            @wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                # Use memory_cache directly (sync-safe) since CacheManager.get/set are async
+                cache_mgr = cache_manager
+                cache_ttl = ttl or cache_mgr.config.default_ttl
+                cache_key = cache_mgr._generate_cache_key(f"{func.__name__}_{cache_type}", *args, **kwargs)
+                # Check memory cache
+                item = cache_mgr.memory_cache.get(cache_key)
+                if item and datetime.now() < item["expires"]:
+                    logger.debug(f"[cache_result] HIT (sync) for {func.__name__}")
+                    cache_mgr.cache_stats["hits"] += 1
+                    return item["data"]
+                cache_mgr.cache_stats["misses"] += 1
+                result = func(*args, **kwargs)
+                # Store in memory cache
+                cache_mgr.memory_cache[cache_key] = {
+                    "data": result,
+                    "expires": datetime.now() + timedelta(seconds=cache_ttl)
+                }
+                logger.debug(f"[cache_result] MISS -> cached (sync) for {func.__name__}")
+                return result
+            return sync_wrapper
     return decorator
+
 
 # Enhanced analysis functions with caching
 @cache_result(cache_type="analysis", ttl=900)

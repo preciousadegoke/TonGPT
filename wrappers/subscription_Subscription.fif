@@ -1,0 +1,507 @@
+// automatically generated from `@stdlib/std/stdlib.fc` `C:/Users/hp/OneDrive/Desktop/TONGPT/wrappers/subscription_Subscription.fc` 
+PROGRAM{
+  DECLPROC __tact_context_get
+  DECLPROC __tact_context_get_sender
+  DECLPROC __tact_dict_get_slice_cell
+  DECLPROC __tact_dict_set_slice_cell
+  DECLPROC $DeployOk$_store
+  DECLPROC $DeployOk$_store_cell
+  DECLPROC $SubscriptionData$_store
+  DECLPROC $SubscriptionData$_store_cell
+  DECLPROC $SubscriptionData$_load
+  DECLPROC $SubscriptionData$_as_optional
+  DECLPROC $SubscriptionData$_load_opt
+  DECLPROC $Subscription$_store
+  DECLPROC $Subscription$_load
+  DECLPROC $Context$_get_value
+  DECLPROC $SubscriptionData$_not_null
+  DECLPROC $SubscriptionData$_to_tuple
+  DECLPROC $SubscriptionData$_to_opt_tuple
+  DECLPROC $SubscriptionData$_to_opt_external
+  DECLPROC $Subscription$init$_load
+  DECLPROC $Subscription$_contract_init
+  DECLPROC $Subscription$_contract_load
+  DECLPROC $Subscription$_contract_store
+  DECLPROC $Subscription$_fun_getSubscription
+  DECLPROC $Subscription$_fun_isActive
+  DECLPROC $Subscription$_fun_price
+  DECLPROC $MessageParameters$_constructor_bounce_to_value_mode_body
+  DECLPROC $Subscription$_fun_notify
+  DECLPROC $SendParameters$_constructor_to_value_mode_bounce_body
+  DECLPROC $DeployOk$_constructor_queryId
+  DECLPROC $SubscriptionData$_constructor_tier_expiresAt
+  124351 DECLMETHOD %getSubscription
+  82798 DECLMETHOD %isActive
+  120091 DECLMETHOD %price
+  DECLPROC recv_internal
+  DECLGLOBVAR __tact_context
+  DECLGLOBVAR __tact_context_sender
+  DECLGLOBVAR __tact_child_contract_codes
+  DECLGLOBVAR __tact_randomized
+  __tact_context_get PROCINLINE:<{
+    __tact_context GETGLOB
+    4 UNTUPLE
+  }>
+  __tact_context_get_sender PROCINLINE:<{
+    __tact_context_sender GETGLOB
+  }>
+  __tact_dict_get_slice_cell PROCINLINE:<{
+    -ROT
+        DICTGETREF NULLSWAPIFNOT
+    IF:<{
+    }>ELSE<{
+      DROP
+      PUSHNULL
+    }>
+  }>
+  __tact_dict_set_slice_cell PROCINLINE:<{
+    DUP
+    ISNULL
+    IF:<{
+      DROP
+      -ROT
+          DICTDEL
+      DROP
+    }>ELSE<{
+      s1 s3 s3 XCHG3
+          DICTSETREF
+    }>
+  }>
+  $DeployOk$_store PROCINLINE:<{
+    2952335191 PUSHINT
+    ROT
+    32 STU
+    64 STU
+  }>
+  $DeployOk$_store_cell PROCINLINE:<{
+    SWAP
+    $DeployOk$_store INLINECALLDICT
+    ENDC
+  }>
+  $SubscriptionData$_store PROCINLINE:<{
+    s0 s2 XCHG
+    8 STU
+    64 STU
+  }>
+  $SubscriptionData$_store_cell PROCINLINE:<{
+    -ROT
+    $SubscriptionData$_store INLINECALLDICT
+    ENDC
+  }>
+  $SubscriptionData$_load PROCINLINE:<{
+    8 LDU
+    64 LDU
+    -ROT
+  }>
+  $SubscriptionData$_as_optional PROCINLINE:<{
+        2 TUPLE
+  }>
+  $SubscriptionData$_load_opt PROCINLINE:<{
+    DUP
+    ISNULL
+    IF:<{
+      DROP
+      PUSHNULL
+    }>ELSE<{
+      CTOS
+      $SubscriptionData$_load INLINECALLDICT
+      1 2 BLKDROP2
+      $SubscriptionData$_as_optional INLINECALLDICT
+    }>
+  }>
+  $Subscription$_store PROCINLINE:<{
+    s0 s2 XCHG
+    STSLICE
+    STDICT
+  }>
+  $Subscription$_load PROCINLINE:<{
+    LDMSGADDR
+    LDDICT
+    -ROT
+  }>
+  $Context$_get_value PROCINLINE:<{
+    s1 s3 XCHG
+    3 BLKDROP
+  }>
+  $SubscriptionData$_not_null PROCINLINE:<{
+        2 UNTUPLE
+  }>
+  $SubscriptionData$_to_tuple PROCINLINE:<{
+        2 TUPLE
+  }>
+  $SubscriptionData$_to_opt_tuple PROCINLINE:<{
+    DUP
+    ISNULL
+    IF:<{
+      DROP
+      PUSHNULL
+    }>ELSE<{
+      $SubscriptionData$_not_null INLINECALLDICT
+      $SubscriptionData$_to_tuple INLINECALLDICT
+    }>
+  }>
+  $SubscriptionData$_to_opt_external PROCINLINE:<{
+    $SubscriptionData$_to_opt_tuple INLINECALLDICT
+    DUP
+    ISNULL
+    IF:<{
+      DROP
+      PUSHNULL
+    }>ELSE<{
+    }>
+  }>
+  $Subscription$init$_load PROCINLINE:<{
+    LDMSGADDR
+    SWAP
+  }>
+  $Subscription$_contract_init PROCINLINE:<{
+    PUSHNULL
+  }>
+  $Subscription$_contract_load PROCINLINE:<{
+    c4 PUSH
+    CTOS
+    1 LDI
+    SWAP
+    IF:<{
+      $Subscription$_load INLINECALLDICT
+      1 2 BLKDROP2
+    }>ELSE<{
+      $Subscription$init$_load INLINECALLDICT
+      SWAP
+      ENDS
+      $Subscription$_contract_init INLINECALLDICT
+    }>
+  }>
+  $Subscription$_contract_store PROCINLINE:<{
+    NEWC
+    TRUE
+    SWAP
+    1 STI
+    -ROT
+    $Subscription$_store INLINECALLDICT
+    ENDC
+    c4 POP
+  }>
+  $Subscription$_fun_getSubscription PROCREF:<{
+    267 PUSHINT
+    s2 PUSH
+    s0 s2 XCHG
+    __tact_dict_get_slice_cell INLINECALLDICT
+    $SubscriptionData$_load_opt INLINECALLDICT
+  }>
+  $Subscription$_fun_isActive PROCREF:<{
+    267 PUSHINT
+    s2 PUSH
+    s0 s2 XCHG
+    __tact_dict_get_slice_cell INLINECALLDICT
+    $SubscriptionData$_load_opt INLINECALLDICT
+    DUP
+    ISNULL
+    IFJMP:<{
+      DROP
+      FALSE
+    }>
+    $SubscriptionData$_not_null INLINECALLDICT
+    NIP
+        NOW
+    GREATER
+  }>
+  $Subscription$_fun_price PROCREF:<{
+    DUP
+    1 EQINT
+    IFJMP:<{
+      DROP
+      1000000000 PUSHINT
+    }>
+    DUP
+    2 EQINT
+    IFJMP:<{
+      DROP
+      5000000000 PUSHINT
+    }>
+    3 EQINT
+    IFJMP:<{
+      20000000000 PUSHINT
+    }>
+    0 PUSHINT
+  }>
+  $MessageParameters$_constructor_bounce_to_value_mode_body PROCINLINE:<{
+    s3 s3 XCHG2
+    s0 s4 XCHG
+  }>
+  $Subscription$_fun_notify PROCINLINE:<{
+    __tact_context_get_sender INLINECALLDICT
+    FALSE
+    0 PUSHINT
+    s0 s3 XCHG2
+    66 PUSHINT
+    SWAP
+    $MessageParameters$_constructor_bounce_to_value_mode_body INLINECALLDICT
+        NEWC
+        b{01} STSLICECONST  // store tag = $0 and ihr_disabled = true
+        1 STI               // store `bounce`
+        b{000} STSLICECONST // store bounced = false and src = addr_none
+        STSLICE             // store `to`
+        SWAP
+        STGRAMS             // store `value`
+        106 PUSHINT         // 1 + 4 + 4 + 64 + 32 + 1
+        STZEROES
+        // → Stack state
+        // s0: Builder
+        // s1: `body`
+        // s2: `mode`
+        STDICT
+        ENDC
+        SWAP
+        SENDRAWMSG
+  }>
+  $SendParameters$_constructor_to_value_mode_bounce_body PROCINLINE:<{
+    s2 s4 XCHG
+    PUSHNULL
+    s4 s3 XCHG2
+    PUSHNULL
+    s0 s3 XCHG
+  }>
+  $DeployOk$_constructor_queryId PROCINLINE:<{
+  }>
+  $SubscriptionData$_constructor_tier_expiresAt PROCINLINE:<{
+  }>
+  %getSubscription PROC:<{
+    $Subscription$_contract_load INLINECALLDICT
+    ROT
+    $Subscription$_fun_getSubscription INLINECALLDICT
+    2 1 BLKDROP2
+    $SubscriptionData$_to_opt_external INLINECALLDICT
+  }>
+  %isActive PROC:<{
+    $Subscription$_contract_load INLINECALLDICT
+    ROT
+    $Subscription$_fun_isActive INLINECALLDICT
+    2 1 BLKDROP2
+  }>
+  %price PROC:<{
+    $Subscription$_contract_load INLINECALLDICT
+    ROT
+    $Subscription$_fun_price INLINECALLDICT
+    2 1 BLKDROP2
+  }>
+  recv_internal PROC:<{
+    SWAP
+    CTOS
+    2 PUSHINT
+    SDSKIPFIRST
+    1 LDI
+    1 LDI
+    LDMSGADDR
+    OVER
+    s3 s4 XCHG
+    s6 s6 XCHG2
+    4 TUPLE
+    __tact_context SETGLOB
+    s0 s2 XCHG
+    __tact_context_sender SETGLOB
+    $Subscription$_contract_load INLINECALLDICT
+    s0 s3 XCHG
+    IFJMP:<{
+      3 BLKDROP
+    }>
+    0 PUSHINT
+    s2 PUSH
+    SBITS
+    DUP
+    31 GTINT
+    IF:<{
+      NIP
+      s0 s2 XCHG
+      32 LDU
+      s0 s3 XCHG
+    }>
+    OVER
+    195467089 PUSHINT
+    EQUAL
+    IFJMP:<{
+      2DROP
+      SWAP
+      LDVARUINT16
+      DROP
+      49469 PUSHINT
+      __tact_context_get_sender INLINECALLDICT
+      s3 PUSH
+      SDEQ
+      THROWANYIFNOT
+      54615 PUSHINT
+          BALANCE FIRST
+      s2 PUSH
+      50000000 PUSHINT
+      ADD
+      GEQ
+      THROWANYIFNOT
+      2 PUSHINT
+      FALSE
+          B{b5ee9c7241010101001000001c000000005769746864726177616c3d0841cb} B>boc PUSHREF
+      s4 PUSH
+      4 -ROLL
+      $SendParameters$_constructor_to_value_mode_bounce_body INLINECALLDICT
+          NEWC
+          b{01} STSLICECONST  // store tag = $0 and ihr_disabled = true
+          1 STI               // store `bounce`
+          b{000} STSLICECONST // store bounced = false and src = addr_none
+          STSLICE             // store `to`
+          SWAP
+          STGRAMS             // store `value`
+          105 PUSHINT         // 1 + 4 + 4 + 64 + 32
+          STZEROES            // store currency_collection, ihr_fee, fwd_fee, created_lt and created_at
+          // → Stack state
+          // s0: Builder
+          // s1: `data`
+          // s2: `code`
+          // s3: `body`
+          // s4: `mode`
+          // Group 2: Placing the Builder after code and data, then checking those for nullability
+          s2 XCHG0
+          DUP2
+          ISNULL
+          SWAP
+          ISNULL
+          AND
+          // → Stack state
+          // s0: -1 (true) if `data` and `code` are both null, 0 (false) otherwise
+          // s1: `code`
+          // s2: `data`
+          // s3: Builder
+          // s4: `body`
+          // s5: `mode`
+          // Group 3: Left branch of the IFELSE, executed if s0 is -1 (true)
+          <{
+              DROP2 // drop `data` and `code`, since either of those is null
+              b{0} STSLICECONST
+          }> PUSHCONT
+          // Group 3: Right branch of the IFELSE, executed if s0 is 0 (false)
+          <{
+              // _ split_depth:(Maybe (## 5))
+              //   special:(Maybe TickTock)
+              //   code:(Maybe ^Cell)
+              //   data:(Maybe ^Cell)
+              //   library:(Maybe ^Cell)
+              // = StateInit;
+              ROT                // place message Builder on top
+              b{10} STSLICECONST // store Maybe = true, Either = false
+              // Start composing inlined StateInit
+              b{00} STSLICECONST // store split_depth and special first
+              STDICT             // store code
+              STDICT             // store data
+              b{0} STSLICECONST  // store library
+          }> PUSHCONT
+          // Group 3: IFELSE that does the branching shown above
+          IFELSE
+          // → Stack state
+          // s0: Builder
+          // s1: null or StateInit
+          // s2: `body`
+          // s3: `mode`
+          // Group 4: Finalizing the message
+          STDICT // store `body` as ref with an extra Maybe bit, since `body` might be null
+          ENDC
+          // → Stack state
+          // s0: Cell
+          // s1: `mode`
+          // Group 5: Sending the message, with `mode` on top
+          SWAP
+          SENDRAWMSG // https://github.com/tact-lang/tact/issues/1558
+      SWAP
+      $Subscription$_contract_store INLINECALLDICT
+    }>
+    OVER
+    2490013878 PUSHINT
+    EQUAL
+    IFJMP:<{
+      2DROP
+      SWAP
+      64 LDU
+      DROP
+      $DeployOk$_constructor_queryId INLINECALLDICT
+      NEWC
+      $DeployOk$_store_cell INLINECALLDICT
+      s1 s2 XCHG
+      $Subscription$_fun_notify INLINECALLDICT
+      $Subscription$_contract_store INLINECALLDICT
+    }>
+    s3 POP
+    0 EQINT
+    s0 s2 XCHG
+    33 LESSINT
+    s1 s2 XCHG
+    AND
+    IFJMP:<{
+      __tact_context_get INLINECALLDICT
+      DROP
+      s2 POP
+      0 PUSHINT
+      s2 PUSH
+      20000000000 PUSHINT
+      GEQ
+      IF:<{
+        DROP
+        NIP
+        3 PUSHINT
+      }>ELSE<{
+        s2 PUSH
+        5000000000 PUSHINT
+        GEQ
+        IF:<{
+          DROP
+          NIP
+          2 PUSHINT
+        }>ELSE<{
+          s0 s2 XCHG
+          1000000000 PUSHINT
+          GEQ
+          IF:<{
+            NIP
+            1 PUSHINT
+          }>ELSE<{
+            101 THROW
+            SWAP
+          }>
+        }>
+      }>
+          NOW
+      s0 s4 PUSH2
+      267 PUSHINT
+      s5 PUSH
+      __tact_dict_get_slice_cell INLINECALLDICT
+      $SubscriptionData$_load_opt INLINECALLDICT
+      DUP
+      ISNULL
+      NOT
+      IF:<{
+        $SubscriptionData$_not_null INLINECALLDICT
+        NIP
+        s0 s2 PUXC
+        GREATER
+        IF:<{
+          DROP
+        }>ELSE<{
+          NIP
+        }>
+      }>ELSE<{
+        DROP
+        NIP
+      }>
+      2592000 PUSHINT
+      ADD
+      SWAP
+      267 PUSHINT
+      s0 s2 XCHG
+      $SubscriptionData$_constructor_tier_expiresAt INLINECALLDICT
+      NEWC
+      $SubscriptionData$_store_cell INLINECALLDICT
+      s3 s4 XCHG
+      s1 s2 XCHG
+      __tact_dict_set_slice_cell INLINECALLDICT
+      $Subscription$_contract_store INLINECALLDICT
+    }>
+    2DROP
+    130 THROW
+  }>
+}END>c

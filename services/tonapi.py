@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 import logging
 from typing import Dict, List, Optional, Union
@@ -12,6 +13,38 @@ load_dotenv()
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# API Configuration
+TONAPI_BASE_URL = "https://tonapi.io/v2"
+TONAPI_KEY = os.getenv("TONAPI_KEY")  # Optional - TON API works without auth for basic requests
+
+# Module-level TON price cache (avoids N blocking HTTP calls per wallet command)
+_TON_PRICE_CACHE: Dict = {"price": None, "fetched_at": 0.0}
+_TON_PRICE_TTL = 60.0  # seconds
+
+
+def _get_ton_price_cached() -> float:
+    """Return cached TON/USD price; fetches fresh if cache is older than 60 seconds."""
+    now = time.time()
+    if (
+        _TON_PRICE_CACHE["price"] is not None
+        and now - _TON_PRICE_CACHE["fetched_at"] < _TON_PRICE_TTL
+    ):
+        return _TON_PRICE_CACHE["price"]
+    resp = requests.get(
+        "https://api.coingecko.com/api/v3/simple/price",
+        params={"ids": "the-open-network", "vs_currencies": "usd"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    price = data["the-open-network"]["usd"]
+    if not isinstance(price, (int, float)) or price <= 0:
+        raise ValueError(f"Invalid TON price: {price}")
+    _TON_PRICE_CACHE["price"] = float(price)
+    _TON_PRICE_CACHE["fetched_at"] = now
+    return _TON_PRICE_CACHE["price"]
+
 
 # API Configuration
 TONAPI_BASE_URL = "https://tonapi.io/v2"
@@ -163,28 +196,30 @@ class EnhancedTONAPIClient:
             url = f"{self.base_url}/accounts/{address}/transactions"
             params = {'limit': limit}
             response = self._request_with_backoff(url, params=params, user_id=user_id)
-            
+
             data = response.json()
-            
-            # Enhance transaction data
+
+            # Fetch price ONCE before the loop to avoid N blocking HTTP calls
+            ton_price_usd = _get_ton_price_cached()
+
             if 'transactions' in data:
                 for tx in data['transactions']:
-                    # Add whale classification and USD values
                     amount = self._extract_transaction_amount_from_tx(tx)
                     if amount:
-                        tx['amount_ton'] = amount / 1e9
-                        tx['whale_category'] = self._classify_whale_size(amount / 1e9)
-                        tx['usd_value'] = self._estimate_usd_value(amount / 1e9)
-                    
-                    # Format timestamp
+                        amount_ton = amount / 1e9
+                        tx['amount_ton'] = amount_ton
+                        tx['whale_category'] = self._classify_whale_size(amount_ton)
+                        tx['usd_value'] = self._estimate_usd_value(amount_ton, ton_price_usd)
+
                     if 'now' in tx:
                         tx['timestamp_formatted'] = self._format_timestamp(tx['now'])
-            
+
             return data
-            
+
         except Exception as e:
             logger.error(f"Error fetching transactions for {address}: {e}")
             raise
+
     
     def resolve_dns(self, domain: str) -> dict:
         """

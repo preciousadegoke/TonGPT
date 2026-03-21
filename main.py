@@ -287,6 +287,9 @@ async def initialize_bot():
             allow_sending_without_reply=True
         )
     )
+    # H-5: Register bot in shared singleton so services don't have to import from main
+    from core.bot_instance import set_bot
+    set_bot(ctx.bot)
     
     # Initialize dispatcher
     ctx.dp = Dispatcher(storage=MemoryStorage())
