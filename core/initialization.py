@@ -103,7 +103,7 @@ async def start_background_tasks(services: Dict[str, Any]) -> None:
     try:
         from utils.redis_conn import redis_client
         if redis_client:
-            from services.blockchain import monitor_followed_wallets
+            from services.monitor import monitor_followed_wallets
             asyncio.create_task(monitor_followed_wallets())
             logger.info("👛 Wallet monitoring (followed addresses) started.")
     except Exception as e:

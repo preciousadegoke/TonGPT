@@ -1,68 +1,22 @@
 import asyncio
 import logging
 import json
-import os
 from decimal import Decimal
 import sqlite3
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
-# Handle telegram imports with better error handling
-try:
-    from telegram import Bot
-    from telegram.error import TelegramError, BadRequest, Forbidden, NetworkError
-    TELEGRAM_AVAILABLE = True
-except ImportError as e:
-    print(f"Warning: Telegram bot library not installed: {e}")
-    print("Install with: pip install python-telegram-bot==20.7")
-    TELEGRAM_AVAILABLE = False
-    
-    # Mock classes for development without telegram
-    class Bot:
-        def __init__(self, token):
-            self.token = token
-        
-        async def send_message(self, chat_id, text, **kwargs):
-            print(f"Mock send to {chat_id}: {text}")
-    
-    class TelegramError(Exception):
-        pass
-    
-    BadRequest = Forbidden = NetworkError = TelegramError
+# Notifications are dispatched through the shared aiogram bot instance
+# (core.bot_instance). No python-telegram-bot dependency is required.
 
-# Optional: Load environment variables from .env file
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 class NotificationService:
     def __init__(self):
-        # Telegram bot token from environment variable
-        self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
-        if not self.bot_token and TELEGRAM_AVAILABLE:
-            logger.warning("TELEGRAM_BOT_TOKEN environment variable not found")
-            # For development, you can set a default token here
-            # self.bot_token = "YOUR_BOT_TOKEN_HERE"
-        
+        # aiogram bot instance is provided by `core.bot_instance` (set in main).
+        # We resolve it lazily inside send_telegram_message to avoid import cycles.
         self.bot = None
-        if self.bot_token and TELEGRAM_AVAILABLE:
-            try:
-                self.bot = Bot(token=self.bot_token)
-                logger.info("Telegram bot initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize Telegram bot: {e}")
-        else:
-            logger.warning("Running in mock mode - notifications will be logged only")
-        
+
         # Initialize database for user preferences and notifications
         self.init_database()
     
@@ -233,31 +187,25 @@ class NotificationService:
     
     async def send_telegram_message(self, user_id: str, message: str, parse_mode: str = "HTML", **kwargs):
         """Send message via Telegram with error handling"""
-        if not self.bot:
-            logger.info(f"Mock send to {user_id}: {message}")
+        if self.bot is None:
+            from core.bot_instance import bot as shared_bot
+            self.bot = shared_bot
+
+        if self.bot is None:
+            logger.info("Mock send to %s: %s", user_id, message)
             return True
             
         try:
+            # aiogram uses parse mode via bot defaults; allow overriding if needed
+            if parse_mode is not None:
+                kwargs.setdefault("parse_mode", parse_mode)
             await self.bot.send_message(
-                chat_id=user_id, 
-                text=message, 
-                parse_mode=parse_mode,
+                chat_id=int(user_id),
+                text=message,
                 **kwargs
             )
             return True
             
-        except Forbidden:
-            logger.warning(f"User {user_id} blocked the bot")
-            return False
-        except BadRequest as e:
-            logger.error(f"Bad request for user {user_id}: {e}")
-            return False
-        except NetworkError as e:
-            logger.error(f"Network error sending to {user_id}: {e}")
-            return False
-        except TelegramError as e:
-            logger.error(f"Telegram error sending to {user_id}: {e}")
-            return False
         except Exception as e:
             logger.error(f"Unexpected error sending message: {e}")
             return False
@@ -648,7 +596,6 @@ def check_service_health() -> Dict:
         stats = notification_service.get_notification_stats()
         return {
             'status': 'healthy',
-            'telegram_available': TELEGRAM_AVAILABLE,
             'bot_configured': notification_service.bot is not None,
             'stats': stats
         }
@@ -719,7 +666,8 @@ async def main():
 async def notify_followers(address: str, tx: Dict) -> None:
     """Notify users following this wallet about a transaction. Delegates to blockchain module."""
     try:
-        from services.blockchain import format_transaction_for_notification, notify_followers as _notify
+        from services.blockchain import format_transaction_for_notification
+        from services.alerts import notify_followers as _notify
         formatted = format_transaction_for_notification(tx)
         await _notify(address, formatted)
     except Exception as e:

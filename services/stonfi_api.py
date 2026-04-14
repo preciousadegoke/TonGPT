@@ -11,6 +11,7 @@ MAX_RETRIES = 3
 
 async def fetch_top_ston_pools() -> List[Dict]:
     """Fetch top STON.fi pools with retry logic and proper async handling"""
+    last_status: int | None = None
     for attempt in range(MAX_RETRIES):
         try:
             async with aiohttp.ClientSession() as session:
@@ -19,9 +20,13 @@ async def fetch_top_ston_pools() -> List[Dict]:
                     timeout=aiohttp.ClientTimeout(total=API_TIMEOUT)
                 ) as resp:
                     if resp.status != 200:
+                        last_status = resp.status
                         logger.warning(f"STON.fi API returned status {resp.status}")
                         if attempt < MAX_RETRIES - 1:
                             continue
+                        logger.error(
+                            f"STON.fi API permanently failed after {MAX_RETRIES} attempts. Last status: {resp.status}"
+                        )
                         return []
                     data = await resp.json()
                     return [
@@ -43,5 +48,7 @@ async def fetch_top_ston_pools() -> List[Dict]:
             if attempt < MAX_RETRIES - 1:
                 await asyncio.sleep(2 ** attempt)
                 continue
-    logger.error(f"Failed to fetch STON.fi pools after {MAX_RETRIES} attempts")
+    logger.error(
+        f"STON.fi API permanently failed after {MAX_RETRIES} attempts. Last status: {last_status}"
+    )
     return []

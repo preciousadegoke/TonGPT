@@ -9,7 +9,7 @@ from dataclasses import dataclass, asdict
 
 try:
     import redis
-    import aioredis
+    import redis.asyncio as aioredis
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
@@ -153,9 +153,13 @@ cache_manager = CacheManager()
 def cache_with_strategy(cache_type: str = "default", ttl: int = None, 
                        invalidate_on_error: bool = False):
     """
-    Advanced caching decorator with multiple strategies
+    Advanced caching decorator with multiple strategies.
+    Only supports async functions — raises TypeError if applied to sync functions.
     """
     def decorator(func: Callable) -> Callable:
+        if not asyncio.iscoroutinefunction(func):
+            raise TypeError("cache_with_strategy can only be applied to async functions")
+
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
             # Determine TTL based on cache type
@@ -180,7 +184,7 @@ def cache_with_strategy(cache_type: str = "default", ttl: int = None,
             # Execute function with retries
             for attempt in range(cache_manager.config.max_retries):
                 try:
-                    result = await func(*args, **kwargs) if asyncio.iscoroutinefunction(func) else func(*args, **kwargs)
+                    result = await func(*args, **kwargs)
                     
                     # Cache successful results
                     await cache_manager.set(cache_key, result, cache_ttl)
@@ -195,21 +199,14 @@ def cache_with_strategy(cache_type: str = "default", ttl: int = None,
                     else:
                         if invalidate_on_error:
                             cache_manager.invalidate_pattern(func.__name__)
-                        raise e
+                        raise
             
             return None
         
-        @wraps(func)
-        def sync_wrapper(*args, **kwargs):
-            # Convert to async for consistent handling
-            if asyncio.iscoroutinefunction(func):
-                return asyncio.create_task(async_wrapper(*args, **kwargs))
-            else:
-                return asyncio.run(async_wrapper(*args, **kwargs))
-        
-        return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
+        return async_wrapper
     
     return decorator
+
 
 # Enhanced analysis functions with caching
 @cache_with_strategy(cache_type="analysis", ttl=900)  # 15 minutes

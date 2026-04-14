@@ -36,15 +36,11 @@ async def wallet_watch_address(message: types.Message, state: FSMContext):
     """Process wallet address and add to watchlist"""
     address = message.text.strip()
     user_id = str(message.from_user.id)
-    
-    # Validate address format (basic validation)
-    if len(address) < 48 or not address.replace('-', '').replace('_', '').isalnum():
-        await message.answer(
-            "❌ <b>Invalid Address Format</b>\n\n"
-            "Please enter a valid TON wallet address.\n"
-            "Example: <code>EQD...abc123</code>",
-            parse_mode="HTML"
-        )
+
+    # Validate address format using CRC16-based verification.
+    from core.security import SecurityManager
+    if not SecurityManager().validate_ton_address(address):
+        await message.answer("❌ Invalid TON address format.")
         return
     
     try:

@@ -140,7 +140,8 @@ class AdvancedRateLimiter:
         pipe.zcard(key)  # Count current requests
         pipe.expire(key, window_seconds)
         
-        results = pipe.execute()
+        # Redis pipeline execution is synchronous; run it off the event loop.
+        results = await asyncio.to_thread(pipe.execute)
         current_requests = results[1]
         
         if current_requests >= limit:

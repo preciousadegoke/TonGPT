@@ -219,6 +219,31 @@ class SafeRedisClient:
                 logger.error(f"Redis HEXISTS error: {e}")
         return False
     
+    def scan_iter(self, match: str = None, count: int = 100):
+        """Incrementally iterate over keys matching a pattern (avoids blocking O(n) KEYS)."""
+        if self.client:
+            try:
+                return self.client.scan_iter(match=match, count=count)
+            except Exception as e:
+                logger.error(f"Redis SCAN_ITER error: {e}")
+        return iter([])
+
+    def hgetall(self, key: str):
+        if self.client:
+            try:
+                return self.client.hgetall(key)
+            except Exception as e:
+                logger.error(f"Redis HGETALL error: {e}")
+        return {}
+
+    def hdel(self, key: str, *fields):
+        if self.client:
+            try:
+                return self.client.hdel(key, *fields)
+            except Exception as e:
+                logger.error(f"Redis HDEL error: {e}")
+        return 0
+
     def lpush(self, key: str, *values):
         if self.client:
             try:

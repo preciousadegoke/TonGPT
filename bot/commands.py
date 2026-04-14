@@ -13,7 +13,7 @@ from aiogram.types import (
 from services.analysis import is_memecoin_only
 from services.tonviewer_api import get_token_info_from_tonviewer
 from utils.realtime_data import get_trending_tokens
-from services.engine_client import engine_client
+from services.engine_client import engine_client, EngineServerError
 
 # Import database and utilities
 # DatabaseManager removed - functionality moved to EngineClient
@@ -229,15 +229,12 @@ async def check_rate_limit(user_id, tier="free"):
         logger.error(f"Rate limit check error: {e}")
         return False  # Fail-closed: deny on error
 
-def log_user_action(user_id, action, success=True, metadata=None):
-    """Safe logging wrapper using EngineClient"""
-    # Fire and forget async logging
-    asyncio.create_task(
-        engine_client.log_activity(
-            user_id, 
-            action, 
-            {"success": success, **(metadata or {})}
-        )
+async def log_user_action(user_id, action, success=True, metadata=None):
+    """Safe async logging wrapper using EngineClient."""
+    await engine_client.log_activity(
+        user_id,
+        action,
+        {"success": success, **(metadata or {})},
     )
 
 def format_token_data(token):
@@ -277,6 +274,21 @@ async def start_command(message: types.Message):
     user = message.from_user
     user_id = user.id
     username = user.username or "unknown"
+
+    # ── Parse deep-link referral payload (/start ref_XXXX_YYYY) ──
+    try:
+        parts = (message.text or "").split(maxsplit=1)
+        if len(parts) > 1 and parts[1].startswith("ref_"):
+            ref_token = parts[1][4:]  # strip "ref_" prefix
+            from handlers.referral import verify_referral_token, record_referral_source
+            referrer_id = verify_referral_token(ref_token)
+            if referrer_id and referrer_id != user_id:  # Prevent self-referral
+                await record_referral_source(user_id, referrer_id)
+                logger.info(f"Referral accepted: user {user_id} referred by {referrer_id}")
+            elif referrer_id == user_id:
+                logger.warning(f"Self-referral attempt blocked for user {user_id}")
+    except Exception as e:
+        logger.warning(f"Referral parsing failed (non-fatal): {e}")
     
     # Sync user with Engine
     try:
@@ -380,7 +392,7 @@ async def help_command(message: types.Message):
     )
 
     await message.reply(help_text, parse_mode="HTML")
-    log_user_action(user_id, "help_command", True)
+    await log_user_action(user_id, "help_command", True)
 
 @router.message(Command("export"))
 async def export_data_command(message: types.Message):
@@ -406,11 +418,11 @@ async def export_data_command(message: types.Message):
                 f"<pre>{payload[:3500]}</pre>\n\n📄 Full export available in repo PRIVACY.md.",
                 parse_mode="HTML"
             )
-        log_user_action(user_id, "export_data", True)
+        await log_user_action(user_id, "export_data", True)
     except Exception as e:
         logger.error(f"Export data error: {e}")
         await message.reply("❌ Could not export data. Please try again later.")
-        log_user_action(user_id, "export_data", False, {"error": str(e)})
+        await log_user_action(user_id, "export_data", False, {"error": str(e)})
 
 @router.message(Command("deletedata"))
 async def delete_data_command(message: types.Message):
@@ -424,14 +436,14 @@ async def delete_data_command(message: types.Message):
                 "We may retain minimal records required by law (e.g. payment audit). "
                 "You can keep using the bot; a new record will be created if you use /start again."
             )
-            log_user_action(user_id, "delete_data", True)
+            await log_user_action(user_id, "delete_data", True)
         else:
             await message.reply("❌ Could not complete deletion. Please try again or contact support.")
-            log_user_action(user_id, "delete_data", False)
+            await log_user_action(user_id, "delete_data", False)
     except Exception as e:
         logger.error(f"Delete data error: {e}")
         await message.reply("❌ Could not delete data. Please try again later.")
-        log_user_action(user_id, "delete_data", False, {"error": str(e)})
+        await log_user_action(user_id, "delete_data", False, {"error": str(e)})
 
 @router.message(Command("accept_terms"))
 async def accept_terms_command(message: types.Message):
@@ -449,7 +461,7 @@ async def accept_terms_command(message: types.Message):
             "You can now use all features of the bot. Try /scan or /ask to get started!",
             parse_mode="HTML"
         )
-        log_user_action(user_id, "accept_terms", True, {"version": CURRENT_TOS_VERSION})
+        await log_user_action(user_id, "accept_terms", True, {"version": CURRENT_TOS_VERSION})
     except Exception as e:
         logger.error(f"Error accepting terms: {e}")
         await message.reply("❌ An error occurred. Please try again later.")
@@ -579,14 +591,14 @@ async def scan_command(message: types.Message):
             
             await message.reply(msg, parse_mode="Markdown")
             
-            log_user_action(user_id, "scan_command", True, {
+            await log_user_action(user_id, "scan_command", True, {
                 "tier": user_tier,
                 "tokens_found": len(memecoins),
                 "response_time_ms": response_time
             })
                 
         except Exception as e:
-            log_user_action(user_id, "scan_command", False, {"tier": user_tier, "error": str(e)})
+            await log_user_action(user_id, "scan_command", False, {"tier": user_tier, "error": str(e)})
             logger.error(f"Error in scan command: {e}")
             await message.reply("❌ Scan service temporarily unavailable.")
 
@@ -640,7 +652,7 @@ async def info_command(message: types.Message):
                 parse_mode="HTML"
             )
             
-            log_user_action(user_id, "info_command", True, {
+            await log_user_action(user_id, "info_command", True, {
                 "contract": contract,
                 "response_time_ms": response_time
             })
@@ -655,7 +667,7 @@ async def info_command(message: types.Message):
             await message.reply("❌ Unable to fetch token information.")
             
     except Exception as e:
-        log_user_action(user_id, "info_command", False, {"error": str(e)})
+        await log_user_action(user_id, "info_command", False, {"error": str(e)})
         logger.error(f"Info command error: {e}")
         await message.reply("❌ An error occurred.")
 
@@ -715,10 +727,10 @@ async def trending_command(message: types.Message):
         
         await message.reply(msg, parse_mode="Markdown")
         
-        log_user_action(user_id, "trending_command", True, {"memecoins_analyzed": len(memecoins)})
+        await log_user_action(user_id, "trending_command", True, {"memecoins_analyzed": len(memecoins)})
         
     except Exception as e:
-        log_user_action(user_id, "trending_command", False, {"error": str(e)})
+        await log_user_action(user_id, "trending_command", False, {"error": str(e)})
         logger.error(f"Error in trending command: {e}")
         await message.reply("❌ Unable to analyze trends.")
 
@@ -808,13 +820,13 @@ async def subscription_status_command(message: types.Message):
             else:
                 await message.reply(status_text, parse_mode="HTML")
             
-            log_user_action(user_id, "view_subscription", True, {
+            await log_user_action(user_id, "view_subscription", True, {
                 "tier": tier,
                 "credits_remaining": credits_remaining
             })
             
         except Exception as e:
-            log_user_action(user_id, "view_subscription", False, {"error": str(e)})
+            await log_user_action(user_id, "view_subscription", False, {"error": str(e)})
             logger.error(f"Subscription status error: {e}")
             await message.reply("❌ Unable to fetch subscription status.")
 
@@ -835,10 +847,10 @@ async def open_app_command(message: types.Message):
             resize_keyboard=True
         )
         await message.answer("Tap below to launch TonGPT Web App:", reply_markup=kb)
-        log_user_action(user_id, "open_app", True)
+        await log_user_action(user_id, "open_app", True)
         
     except Exception as e:
-        log_user_action(user_id, "open_app", False, {"error": str(e)})
+        await log_user_action(user_id, "open_app", False, {"error": str(e)})
         logger.error(f"App command error: {e}")
         await message.reply("❌ Unable to launch app right now.")
 
@@ -865,7 +877,7 @@ async def chat_handler(message: types.Message):
                     "⏰ You've reached your message limit. "
                     "Upgrade to premium for unlimited messages!"
                 )
-                log_user_action(user_id, "chat_rate_limited", False, {"tier": user_tier})
+                await log_user_action(user_id, "chat_rate_limited", False, {"tier": user_tier})
                 return
             
             # Show typing indicator
@@ -880,6 +892,9 @@ async def chat_handler(message: types.Message):
                     try:
                         # Fetch context via Engine API
                         context = await engine_client.get_chat_context(user_id)
+                    except EngineServerError:
+                        context = []
+                        logger.warning("Engine unavailable — chat context temporarily missing for user %s", user_id)
                     except Exception as e:
                         logger.warning(f"Failed to fetch context: {e}")
                     
@@ -926,7 +941,7 @@ async def chat_handler(message: types.Message):
             await message.answer(ai_response)
             
             # Log successful chat interaction
-            log_user_action(user_id, "chat_message", True, {
+            await log_user_action(user_id, "chat_message", True, {
                 "tier": user_tier,
                 "message_length": len(user_message),
                 "response_length": len(ai_response),
@@ -934,7 +949,7 @@ async def chat_handler(message: types.Message):
             })
             
         except Exception as e:
-            log_user_action(user_id, "chat_message", False, {
+            await log_user_action(user_id, "chat_message", False, {
                 "tier": user_tier,
                 "error": str(e),
                 "message_length": len(user_message) if user_message else 0

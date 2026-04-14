@@ -4,6 +4,7 @@ FastAPI server for TonGPT Mini-App
 from datetime import datetime, timedelta
 from typing import Dict, Any
 import logging
+import asyncio
 import os
 import hashlib
 import hmac
@@ -54,6 +55,13 @@ def verify_telegram_init_data(init_data: str) -> dict:
 async def lifespan(app: FastAPI):
     """Lifespan for FastAPI mini-app"""
     logger.info("🚀 Starting Mini-App API server...")
+    # Start background cache maintenance and enhanced caching warmup.
+    # This prevents unbounded memory growth from caches that otherwise never get cleaned.
+    from services.analysis import start_cache_maintenance
+    from services.analysis_cache import initialize_enhanced_caching
+
+    start_cache_maintenance()
+    initialize_enhanced_caching()
     yield
     logger.info("🛑 Stopping Mini-App API server...")
 
@@ -120,6 +128,7 @@ def create_miniapp_server() -> FastAPI:
                             if count > 60: # Max 60 requests per minute per IP to miniapp
                                 logger.warning(f"BLOCKED Miniapp IP {ip} (Rate Limit Exceeded)")
                                 from fastapi.responses import JSONResponse
+                                # H-13: decrement BEFORE returning so counter doesn't leak
                                 return JSONResponse(status_code=429, content={"detail": "Slow down! Too many requests."})
                                 
                             return await call_next(request)
@@ -136,7 +145,11 @@ def create_miniapp_server() -> FastAPI:
     app.add_middleware(IPRateLimitMiddleware)
 
     # Mount static files for the mini-app
-    app.mount("/miniapp", StaticFiles(directory="miniapp"), name="miniapp")
+    import os as _os
+    if _os.path.isdir("miniapp"):
+        app.mount("/miniapp", StaticFiles(directory="miniapp"), name="miniapp")
+    else:
+        logger.warning("miniapp/ directory not found — static file serving disabled")
     
     return app
 
@@ -144,6 +157,53 @@ def create_miniapp_server() -> FastAPI:
 miniapp = create_miniapp_server()
 
 # ==================== MINI-APP API ROUTES ====================
+
+async def _get_memecoin_data() -> list:
+    """Shared memecoin formatting logic for /api/scan and /api/memecoins."""
+    try:
+        from utils.scanner import scan_memecoins
+
+        tokens = await scan_memecoins(limit=5)
+        return [
+            {
+                "name": token["symbol"],
+                "symbol": token["symbol"],
+                "price": f"${token['price']:.4f}",
+                "change": f"{token['change']:+.1f}%",
+                "lp": f"{token.get('lp', 1000000):,}",
+                "holders": f"{token.get('holders', 5000):,}",
+                "age": token.get("age", "1w"),
+                "volume": f"{token.get('volume', 500000):,}",
+            }
+            for token in tokens
+        ]
+    except ImportError:
+        logger.warning("⚠ Scanner module not found")
+        return [
+            {
+                "name": "DOGCOIN",
+                "symbol": "DOG",
+                "price": "$0.0045",
+                "change": "+12.5%",
+                "lp": "1,250,000",
+                "holders": "8,500",
+                "age": "2d",
+                "volume": "750,000",
+            },
+            {
+                "name": "CATCOIN",
+                "symbol": "CAT",
+                "price": "$0.0032",
+                "change": "-3.2%",
+                "lp": "980,000",
+                "holders": "6,200",
+                "age": "5d",
+                "volume": "420,000",
+            },
+        ]
+    except Exception as e:
+        logger.error(f"Memecoin scan failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @miniapp.get("/")
 async def serve_miniapp():
@@ -153,7 +213,7 @@ async def serve_miniapp():
             html = f.read()
             
         api_url = os.environ.get("API_BASE_URL", "https://tongpt.loca.lt/api")
-        injected_script = f'<script>window.TONGPT_API_URL = "{api_url}";</script></head>'
+        injected_script = f'<script>window.TONGPT_API_URL = {_json.dumps(api_url)};</script></head>'
         html = html.replace('</head>', injected_script)
         
         return HTMLResponse(content=html)
@@ -164,49 +224,7 @@ async def serve_miniapp():
 @miniapp.get("/api/scan")
 async def get_trending_coins():
     """Get trending coins for the mini-app"""
-    try:
-        from utils.scanner import scan_memecoins
-        tokens = await scan_memecoins(limit=5)
-        return [
-            {
-                "name": token["symbol"],
-                "symbol": token["symbol"],
-                "price": f"${token['price']:.4f}",
-                "change": f"{token['change']:+.1f}%",
-                "lp": f"{token.get('lp', 1000000):,}",
-                "holders": f"{token.get('holders', 5000):,}",
-                "age": token.get('age', "1w"),
-                "volume": f"{token.get('volume', 500000):,}"
-            } for token in tokens
-        ]
-    except ImportError:
-        logger.warning("⚠ Scanner module not found")
-        # Return mock data for testing
-        return [
-            {
-                "name": "DOGCOIN",
-                "symbol": "DOG", 
-                "price": "$0.0045",
-                "change": "+12.5%",
-                "lp": "1,250,000",
-                "holders": "8,500",
-                "age": "2d",
-                "volume": "750,000"
-            },
-            {
-                "name": "CATCOIN",
-                "symbol": "CAT",
-                "price": "$0.0032", 
-                "change": "-3.2%",
-                "lp": "980,000",
-                "holders": "6,200",
-                "age": "5d",
-                "volume": "420,000"
-            }
-        ]
-    except Exception as e:
-        logger.error(f"❌ Scan API error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _get_memecoin_data()
 
 @miniapp.get("/api/whale")
 async def get_whale_transactions():
@@ -292,16 +310,23 @@ async def get_X_sentiment():
         return {"sentiment": "neutral", "posts": [], "summary": "Data unavailable"}
 
 @miniapp.post("/api/scan-token")
-async def scan_token(data: dict):
+async def scan_token(request: Request, data: dict):
     """Scan token contract for detailed information"""
+    # M-6: Validate Telegram initData before processing
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    try:
+        verify_telegram_init_data(init_data)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid Telegram init data")
+
     try:
         contract_address = data.get('address')
         
         if not contract_address:
             raise HTTPException(status_code=400, detail="Contract address is required")
         
-        # Get token analysis
-        analysis = analyze_token_ai(contract_address)
+        # H-11: analyze_token_ai is sync — offload to thread
+        analysis = await asyncio.to_thread(analyze_token_ai, contract_address)
         
         return {
             "success": True,
@@ -315,8 +340,15 @@ async def scan_token(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 @miniapp.post("/api/ai-analysis")
-async def get_ai_analysis(data: dict):
+async def get_ai_analysis(request: Request, data: dict):
     """Get AI-powered analysis for tokens or wallets"""
+    # M-6: Validate Telegram initData before processing
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    try:
+        verify_telegram_init_data(init_data)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid Telegram init data")
+
     try:
         analysis_type = data.get('type', 'token')
         address = data.get('address')
@@ -325,9 +357,9 @@ async def get_ai_analysis(data: dict):
             raise HTTPException(status_code=400, detail="Address is required")
         
         if analysis_type == 'token':
-            analysis = analyze_token_ai(address)
+            analysis = await asyncio.to_thread(analyze_token_ai, address)
         elif analysis_type == 'wallet':
-            analysis = analyze_wallet_ai(address)
+            analysis = await asyncio.to_thread(analyze_wallet_ai, address)
         else:
             raise HTTPException(status_code=400, detail="Invalid analysis type")
         
@@ -625,13 +657,20 @@ async def miniapp_health_check():
     }
 
 @miniapp.get("/api/user/status")
-async def get_user_status(telegram_id: int):
+async def get_user_status(request: Request):
     """Get user subscription status from C# Engine"""
+    # M-6: Validate Telegram initData — extract telegram_id from verified data
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
     try:
-        from services.engine_client import EngineClient
-        # Initialize client (base_url is loaded from env inside class)
-        client = EngineClient() 
-        user = await client.get_user(telegram_id)
+        tg_user = verify_telegram_init_data(init_data)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid Telegram init data")
+
+    telegram_id = tg_user["id"]
+
+    try:
+        from services.engine_client import engine_client
+        user = await engine_client.get_user(telegram_id)
         
         if user:
             return {
@@ -649,27 +688,7 @@ async def get_user_status(telegram_id: int):
 @miniapp.get("/api/memecoins")
 async def get_memecoins_alias():
     """Alias for /api/scan"""
-    try:
-        from utils.scanner import scan_memecoins
-        tokens = await scan_memecoins(limit=5)
-        return [
-            {
-                "name": token["symbol"],
-                "symbol": token["symbol"],
-                "price": f"${token['price']:.4f}",
-                "change": f"{token['change']:+.1f}%",
-                "lp": f"{token.get('lp', 1000000):,}",
-                "holders": f"{token.get('holders', 5000):,}",
-                "age": token.get('age', "1w"),
-                "volume": f"{token.get('volume', 500000):,}"
-            } for token in tokens
-        ]
-    except:
-        # Fallback Mock
-        return [
-            {"name": "DOGCOIN", "symbol": "DOG", "price": "$0.0045", "change": "+12.5%", "lp": "1,250,000", "holders": "8,500", "age": "2d", "volume": "750,000"},
-            {"name": "CATCOIN", "symbol": "CAT", "price": "$0.0032", "change": "-3.2%", "lp": "980,000", "holders": "6,200", "age": "5d", "volume": "420,000"}
-        ]
+    return await _get_memecoin_data()
 
 @miniapp.get("/api/trending")
 async def get_trending_alias():
@@ -685,7 +704,8 @@ async def get_trending_alias():
                 "volume": f"{pool['volume']:,}" if pool.get("volume") else f"{pool['tvl_usd'] * 0.25:,}"
             } for pool in pools
         ]
-    except:
+    except Exception as e:
+        logger.error(f"❌ /api/trending failed: {e}")
         return [{"pair": "TON/USDT", "apr": "15.2%", "tvl": "2,500,000", "volume": "850,000"}]
 
 @miniapp.get("/api/social")
@@ -706,5 +726,6 @@ async def get_social_alias():
             "posts": posts[:3],
             "summary": f"{bullish} bullish, {bearish} bearish, {neutral} neutral"
         }
-    except:
+    except Exception as e:
+        logger.error(f"❌ /api/social failed: {e}")
         return {"sentiment": "neutral", "posts": [], "summary": "Data unavailable"}

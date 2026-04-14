@@ -4,7 +4,6 @@ import os
 from redis import Redis
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
-from utils.redis_conn import redis_client
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -52,29 +51,10 @@ def format_transaction_for_notification(tx: Dict) -> Dict[str, Any]:
 
 
 async def notify_followers(address: str, formatted_tx: Dict) -> None:
-    """Notify users who follow this address (Redis set wallet_followers:{address} -> telegram ids)."""
-    try:
-        key = f"wallet_followers:{address}"
-        follower_ids = redis_client.smembers(key)
-        if not follower_ids:
-            return
-        # Use shared bot instance (avoids circular import from main)
-        from core.bot_instance import bot
-        if bot:
-            text = (
-                f"🐋 Large transaction on followed address {address[:8]}...\n"
-                f"Amount: {formatted_tx.get('amount_ton', 'N/A')} TON\n"
-                f"Hash: {formatted_tx.get('hash', '')[:16]}..."
-            )
-            for fid in follower_ids:
-                try:
-                    await bot.send_message(chat_id=int(fid), text=text)
-                except Exception as e:
-                    logger.debug(f"Notify follower {fid}: {e}")
-        else:
-            logger.info(f"Wallet notification (no bot instance set) for {address}")
-    except Exception as e:
-        logger.error(f"notify_followers for {address}: {e}")
+    """Backward-compatible wrapper around `services.alerts.notify_followers`."""
+    from services.alerts import notify_followers as _notify_followers
+
+    await _notify_followers(address, formatted_tx)
 
 
 def cleanup_blockchain_resources() -> None:

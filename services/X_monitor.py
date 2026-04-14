@@ -36,6 +36,10 @@ class XMonitor:
         # Initialize database
         self.init_database()
         
+        # Persistent sqlite connection to avoid per-cycle connection churn.
+        # check_same_thread=False lets the connection be used from asyncio.to_thread workers.
+        self.db_conn = sqlite3.connect("ton_ecosystem.db", check_same_thread=False)
+        
         # Rate limiting
         self.last_api_call = 0
         self.min_call_interval = 2.0  # 2 seconds between calls
@@ -151,6 +155,9 @@ class XMonitor:
             'CZ_Binance': {'type': 'crypto_influencer', 'priority': 'medium'},
             'justinsuntron': {'type': 'crypto_influencer', 'priority': 'low'},
         }
+        
+        # Fast influencer membership checks (lowercased).
+        self._influencer_set = set(k.lower() for k in self.ton_influencers)
         
         # TON memecoin patterns and indicators
         self.memecoin_indicators = [
@@ -426,79 +433,102 @@ class XMonitor:
         
         return False
     
-    async def monitor_kol_following(self, username: str):
-        """Monitor who a KOL is following for alpha signals"""
+    def _monitor_kol_following_sync(self, username: str) -> None:
+        """Monitor who a KOL is following for alpha signals (runs in worker thread)."""
         try:
-            await self.rate_limit_delay()
-            
+            # Synchronous rate limiting (this function is already executed in a thread).
+            current_time = time.time()
+            time_since_last_call = current_time - self.last_api_call
+            if time_since_last_call < self.min_call_interval:
+                wait_time = self.min_call_interval - time_since_last_call
+                time.sleep(wait_time)
+            self.last_api_call = time.time()
+
             # Get user info
             user = self.client.get_user(username=username)
             if not user.data:
                 return
-            
+
             user_id = user.data.id
-            
+
             # Get their following list (limited by API)
             following = self.client.get_users_following(
                 id=user_id,
                 max_results=100,  # API limit
-                user_fields=['created_at', 'public_metrics', 'description', 'verified']
+                user_fields=["created_at", "public_metrics", "description", "verified"],
             )
-            
+
             if following.data:
-                conn = sqlite3.connect('ton_ecosystem.db')
-                cursor = conn.cursor()
-                
+                cursor = self.db_conn.cursor()
+
                 for followed_user in following.data:
+                    followed_username = getattr(followed_user, "username", None)
+                    if not followed_username:
+                        continue
+
                     # Check if this is a new follow
                     cursor.execute(
                         "SELECT * FROM influencer_following WHERE influencer_username = ? AND following_username = ?",
-                        (username, followed_user.username)
+                        (username, followed_username),
                     )
-                    
                     is_new = cursor.fetchone() is None
-                    
+
+                    follower_count = (followed_user.public_metrics or {}).get("followers_count", 0)
+
                     # Store following relationship
-                    cursor.execute('''
+                    cursor.execute(
+                        '''
                         INSERT OR REPLACE INTO influencer_following 
                         (influencer_username, following_username, following_user_id, followed_at,
                          is_new_follow, follower_count, account_created_at, bio, verified)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        username, followed_user.username, followed_user.id,
-                        datetime.utcnow(), is_new,
-                        followed_user.public_metrics.get('followers_count', 0),
-                        followed_user.created_at, followed_user.description or '',
-                        followed_user.verified or False
-                    ))
-                    
+                        ''',
+                        (
+                            username,
+                            followed_username,
+                            followed_user.id,
+                            datetime.utcnow(),
+                            is_new,
+                            follower_count,
+                            followed_user.created_at,
+                            followed_user.description or "",
+                            followed_user.verified or False,
+                        ),
+                    )
+
                     # Create alpha signal for new follows of small accounts
-                    if is_new and followed_user.public_metrics.get('followers_count', 0) < 10000:
+                    if is_new and follower_count < 10000:
                         self.create_alpha_signal(
-                            'new_follow', username, followed_user.username,
-                            f"KOL {username} followed small account {followed_user.username}",
-                            0.7
+                            "new_follow",
+                            username,
+                            followed_username,
+                            f"KOL {username} followed small account {followed_username}",
+                            0.7,
                         )
-                
-                conn.commit()
-                conn.close()
-                
+
+                self.db_conn.commit()
+
         except Exception as e:
             logger.error(f"Error monitoring {username} following: {e}")
+
+    async def monitor_kol_following(self, username: str):
+        """Monitor who a KOL is following for alpha signals."""
+        await asyncio.to_thread(self._monitor_kol_following_sync, username)
     
     def create_alpha_signal(self, signal_type: str, source: str, target: str, content: str, confidence: float):
         """Create an alpha signal entry"""
-        conn = sqlite3.connect('ton_ecosystem.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('''
+        cursor = self.db_conn.cursor()
+
+        cursor.execute(
+            '''
             INSERT INTO alpha_signals 
             (signal_type, source_username, target_username, action, confidence_score, detected_at, content)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (signal_type, source, target, 'follow', confidence, datetime.utcnow(), content))
-        
-        conn.commit()
-        conn.close()
+            ''',
+            (signal_type, source, target, "follow", confidence, datetime.utcnow(), content),
+        )
+
+        self.db_conn.commit()
     
     async def discover_new_ton_accounts(self):
         """Discover new TON-related accounts through various signals"""
@@ -561,15 +591,22 @@ class XMonitor:
                             # Enhanced analysis
                             category = self.categorize_ton_content(tweet)
                             memecoin_score = self.calculate_memecoin_score(tweet)
-                            contract_addresses = self.extract_ton_contract_addresses(tweet['text'])
+                            contract_addresses = self.extract_ton_contract_addresses(tweet.text)
                             
                             # Store with enhanced data
-                            self.store_enhanced_tweet(tweet, user, category, memecoin_score, contract_addresses)
+                            await asyncio.to_thread(
+                                self.store_enhanced_tweet,
+                                tweet,
+                                user,
+                                category,
+                                memecoin_score,
+                                contract_addresses,
+                            )
                             processed += 1
                             
                             # High-value alerts
                             if (memecoin_score > 0.6 or 
-                                user.username.lower() in [u.lower() for u in self.ton_influencers] or
+                                (user.username or "").lower() in self._influencer_set or
                                 contract_addresses):
                                 await self.send_enhanced_alert(tweet, user, category, memecoin_score, contract_addresses)
                                 memecoin_alerts += 1
@@ -599,11 +636,11 @@ class XMonitor:
     
     def store_enhanced_tweet(self, tweet: Dict, user, category: str, memecoin_score: float, addresses: List[str]):
         """Store tweet with enhanced analysis data"""
-        conn = sqlite3.connect('ton_ecosystem.db')
-        cursor = conn.cursor()
-        
-        is_influencer = user.username.lower() in [u.lower() for u in self.ton_influencers]
-        influencer_data = self.ton_influencers.get(user.username.lower(), {})
+        cursor = self.db_conn.cursor()
+
+        username_lc = (user.username or "").lower()
+        is_influencer = username_lc in self._influencer_set
+        influencer_data = self.ton_influencers.get(username_lc, {})
         
         cursor.execute('''
             INSERT OR REPLACE INTO tweets 
@@ -612,11 +649,13 @@ class XMonitor:
              category, contains_contract_address, contract_addresses, memecoin_score, analyzed_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            tweet['id'], user.username, tweet['text'], tweet['created_at'],
-            tweet['public_metrics']['retweet_count'], tweet['public_metrics']['like_count'],
-            tweet['public_metrics']['reply_count'], True, is_influencer,
+            tweet.id, user.username, tweet.text, tweet.created_at,
+            (tweet.public_metrics or {}).get('retweet_count', 0),
+            (tweet.public_metrics or {}).get('like_count', 0),
+            (tweet.public_metrics or {}).get('reply_count', 0),
+            True, is_influencer,
             influencer_data.get('type'), influencer_data.get('priority'),
-            self.calculate_sentiment(tweet['text']), category,
+            self.calculate_sentiment(tweet.text), category,
             bool(addresses), json.dumps(addresses), memecoin_score, datetime.utcnow()
         ))
         
@@ -627,10 +666,15 @@ class XMonitor:
                     INSERT OR IGNORE INTO ton_memecoins
                     (contract_address, discovered_at, first_tweet_id, discoverer_username, initial_followers)
                     VALUES (?, ?, ?, ?, ?)
-                ''', (address, datetime.utcnow(), tweet['id'], user.username, user.public_metrics['followers_count']))
-        
-        conn.commit()
-        conn.close()
+                ''', (
+                    address,
+                    datetime.utcnow(),
+                    tweet.id,
+                    user.username,
+                    (user.public_metrics or {}).get('followers_count', 0),
+                ))
+
+        self.db_conn.commit()
     
     def calculate_sentiment(self, text: str) -> float:
         """Enhanced sentiment analysis"""
@@ -672,7 +716,10 @@ class XMonitor:
             alert_parts.append(f"📝 Contracts: {', '.join(addresses[:2])}")
         
         # Tweet content
-        alert_parts.append(f"💬 \"{tweet['text'][:150]}{'...' if len(tweet['text']) > 150 else ''}\"")
+        tweet_text = getattr(tweet, "text", "") or ""
+        alert_parts.append(
+            f"💬 \"{tweet_text[:150]}{'...' if len(tweet_text) > 150 else ''}\""
+        )
         
         alert_message = "\n".join(alert_parts)
         logger.warning(f"ENHANCED ALERT:\n{alert_message}")

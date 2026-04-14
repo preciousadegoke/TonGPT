@@ -6,6 +6,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQu
 from utils.redis_conn import redis_client
 from services.engine_client import engine_client
 import logging
+import asyncio
 import json
 from datetime import datetime, timedelta
 import sqlite3
@@ -124,31 +125,30 @@ async def show_influencer_posts(callback: CallbackQuery):
 async def show_sentiment_analysis(callback: CallbackQuery):
     """Show comprehensive X sentiment analysis"""
     try:
-        # Get recent tweets from database if available
-        conn = None
-        tweets = []
-        
-        try:
-            conn = sqlite3.connect('ton_tweets.db')
+        # Get recent tweets from database if available (offload blocking sqlite to a thread)
+        def _db_operation():
+            conn = sqlite3.connect("ton_tweets.db")
             cursor = conn.cursor()
-            
-            # Get tweets from last 24 hours
             yesterday = datetime.utcnow() - timedelta(hours=24)
-            cursor.execute('''
+            cursor.execute(
+                '''
                 SELECT sentiment_score, retweet_count, like_count, username, content, is_influencer
-                FROM tweets 
+                FROM tweets
                 WHERE is_ton_related = 1 AND created_at > ?
                 ORDER BY created_at DESC
                 LIMIT 100
-            ''', (yesterday,))
-            
-            tweets = cursor.fetchall()
-            
+                ''',
+                (yesterday,),
+            )
+            rows = cursor.fetchall()
+            conn.close()
+            return rows
+
+        try:
+            tweets = await asyncio.to_thread(_db_operation)
         except Exception as db_error:
             logger.error(f"Database query failed: {db_error}")
-        finally:
-            if conn:
-                conn.close()
+            tweets = []
         
         if not tweets:
             await callback.message.edit_text(
@@ -241,40 +241,47 @@ async def show_X_stats(callback: CallbackQuery):
         
         # Try to get stats from database
         try:
-            conn = sqlite3.connect('ton_tweets.db')
-            cursor = conn.cursor()
-            
-            # Total tweets tracked
-            cursor.execute("SELECT COUNT(*) FROM tweets WHERE is_ton_related = 1")
-            stats['total_tweets'] = cursor.fetchone()[0]
-            
-            # Influencer tweets
-            cursor.execute("SELECT COUNT(*) FROM tweets WHERE is_influencer = 1 AND is_ton_related = 1")
-            stats['influencer_tweets'] = cursor.fetchone()[0]
-            
-            # Average engagement
-            cursor.execute('''
-                SELECT AVG(retweet_count), AVG(like_count) 
-                FROM tweets WHERE is_ton_related = 1 AND retweet_count IS NOT NULL
-            ''')
-            avg_engagement = cursor.fetchone()
-            stats['avg_retweets'] = avg_engagement[0] if avg_engagement[0] else 0
-            stats['avg_likes'] = avg_engagement[1] if avg_engagement[1] else 0
-            
-            # Recent activity (last 24h)
-            yesterday = datetime.utcnow() - timedelta(hours=24)
-            cursor.execute('''
-                SELECT COUNT(*) FROM tweets 
-                WHERE is_ton_related = 1 AND created_at > ?
-            ''', (yesterday,))
-            stats['recent_tweets'] = cursor.fetchone()[0]
-            
-            # Last check time
-            cursor.execute("SELECT value FROM monitoring_state WHERE key = 'last_check'")
-            last_check_result = cursor.fetchone()
-            stats['last_check'] = last_check_result[0] if last_check_result else None
-            
-            conn.close()
+            def _db_operation():
+                conn = sqlite3.connect("ton_tweets.db")
+                cursor = conn.cursor()
+
+                local_stats = {}
+                cursor.execute("SELECT COUNT(*) FROM tweets WHERE is_ton_related = 1")
+                local_stats["total_tweets"] = cursor.fetchone()[0]
+
+                cursor.execute(
+                    "SELECT COUNT(*) FROM tweets WHERE is_influencer = 1 AND is_ton_related = 1"
+                )
+                local_stats["influencer_tweets"] = cursor.fetchone()[0]
+
+                cursor.execute(
+                    '''
+                    SELECT AVG(retweet_count), AVG(like_count) 
+                    FROM tweets WHERE is_ton_related = 1 AND retweet_count IS NOT NULL
+                    '''
+                )
+                avg_engagement = cursor.fetchone()
+                local_stats["avg_retweets"] = avg_engagement[0] if avg_engagement[0] else 0
+                local_stats["avg_likes"] = avg_engagement[1] if avg_engagement[1] else 0
+
+                yesterday = datetime.utcnow() - timedelta(hours=24)
+                cursor.execute(
+                    '''
+                    SELECT COUNT(*) FROM tweets 
+                    WHERE is_ton_related = 1 AND created_at > ?
+                    ''',
+                    (yesterday,),
+                )
+                local_stats["recent_tweets"] = cursor.fetchone()[0]
+
+                cursor.execute("SELECT value FROM monitoring_state WHERE key = 'last_check'")
+                last_check_result = cursor.fetchone()
+                local_stats["last_check"] = last_check_result[0] if last_check_result else None
+
+                conn.close()
+                return local_stats
+
+            stats = await asyncio.to_thread(_db_operation)
             
         except Exception as db_error:
             logger.error(f"Database stats query failed: {db_error}")

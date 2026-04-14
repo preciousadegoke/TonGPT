@@ -1,70 +1,77 @@
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+"""
+Inline keyboard button utilities for TonGPT (using aiogram 3.x).
+"""
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
 def main_menu_buttons() -> InlineKeyboardMarkup:
     """
     Main action buttons for TonGPT homepage or default reply.
     """
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("🚀 Scan Memecoins", callback_data="scan"),
-        InlineKeyboardButton("🐳 Whale Watch", callback_data="whale"),
-        InlineKeyboardButton("🧠 Trending", callback_data="trending"),
-        InlineKeyboardButton("🌾 STON Yield", callback_data="ston"),
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🚀 Scan Memecoins", callback_data="scan"),
+        InlineKeyboardButton(text="🐳 Whale Watch", callback_data="whale"),
     )
-    markup.add(
-        InlineKeyboardButton("👛 Wallet Tracker", callback_data="wallet"),
-        InlineKeyboardButton("⚡ Alerts", callback_data="alerts"),
-        InlineKeyboardButton("💳 Subscribe", callback_data="subscribe"),
+    builder.row(
+        InlineKeyboardButton(text="🧠 Trending", callback_data="trending"),
+        InlineKeyboardButton(text="🌾 STON Yield", callback_data="ston"),
     )
-    return markup
+    builder.row(
+        InlineKeyboardButton(text="👛 Wallet Tracker", callback_data="wallet"),
+        InlineKeyboardButton(text="⚡ Alerts", callback_data="alerts"),
+        InlineKeyboardButton(text="💳 Subscribe", callback_data="subscribe"),
+    )
+    return builder.as_markup()
 
 
 def subscribe_buttons() -> InlineKeyboardMarkup:
     """
     Subscription plan buttons.
     """
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("🥉 Starter (0.8 TON)", callback_data="sub_starter"),
-        InlineKeyboardButton("🥈 Pro (3 TON)", callback_data="sub_pro"),
-        InlineKeyboardButton("🥇 Pro+ (6 TON)", callback_data="sub_proplus"),
-        InlineKeyboardButton("👑 Elite (10 TON)", callback_data="sub_elite"),
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🥉 Starter (0.8 TON)", callback_data="sub_starter"),
+        InlineKeyboardButton(text="🥈 Pro (3 TON)", callback_data="sub_pro"),
     )
-    markup.add(
-        InlineKeyboardButton("🔁 Pricing & Add-ons", callback_data="pricing"),
-        InlineKeyboardButton("🎯 Lifetime (18 TON)", callback_data="sub_lifetime")
+    builder.row(
+        InlineKeyboardButton(text="🥇 Pro+ (6 TON)", callback_data="sub_proplus"),
+        InlineKeyboardButton(text="👑 Elite (10 TON)", callback_data="sub_elite"),
     )
-    return markup
+    builder.row(
+        InlineKeyboardButton(text="🔁 Pricing & Add-ons", callback_data="pricing"),
+        InlineKeyboardButton(text="🎯 Lifetime (18 TON)", callback_data="sub_lifetime"),
+    )
+    return builder.as_markup()
 
 
 def wallet_action_buttons(address: str) -> InlineKeyboardMarkup:
     """
     Buttons for wallet-specific actions.
     """
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_wallet:{address}"),
-        InlineKeyboardButton("🔔 Set Alert", callback_data=f"alert_wallet:{address}"),
-        InlineKeyboardButton("❌ Unfollow", callback_data=f"unfollow_wallet:{address}")
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🔄 Refresh", callback_data=f"refresh_wallet:{address}"),
+        InlineKeyboardButton(text="🔔 Set Alert", callback_data=f"alert_wallet:{address}"),
+        InlineKeyboardButton(text="❌ Unfollow", callback_data=f"unfollow_wallet:{address}"),
     )
-    return markup
+    return builder.as_markup()
 
 
 def referral_button(ref_link: str) -> InlineKeyboardMarkup:
     """
     Referral invite button with custom link.
     """
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🤝 Invite & Earn", url=ref_link))
-    return markup
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="🤝 Invite & Earn", url=ref_link))
+    return builder.as_markup()
 
 
 def back_to_menu_button() -> InlineKeyboardMarkup:
     """
     Single button to return to main menu.
     """
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu"))
-    return markup
-
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu"))
+    return builder.as_markup()

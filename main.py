@@ -128,6 +128,67 @@ async def _backoff(attempt: int, base: float = 1.0, cap: float = 30.0):
     jitter = random.uniform(0, delay * 0.25)
     await asyncio.sleep(delay + jitter)
 
+# ── Price Alert Polling Loop (Fix-5) ──────────────────────────────────
+async def price_alert_polling_loop():
+    """Background task: check Redis alerts and send notifications when price crosses target."""
+    from services.tonapi import get_ton_price_usd
+    from services.notifications import notification_service
+
+    while True:
+        try:
+            if not redis_client or not redis_client.available:
+                await asyncio.sleep(60)
+                continue
+
+            # Fetch current TON price (once per cycle)
+            try:
+                current_price = await get_ton_price_usd()
+            except Exception as price_err:
+                logger.warning(f"Price alert loop: price fetch failed — {type(price_err).__name__}: {price_err}")
+                await asyncio.sleep(60)
+                continue
+
+            # Iterate over alerts:* keys using incremental scan (not blocking KEYS)
+            for key in redis_client.scan_iter(match="alerts:*"):
+                try:
+                    user_id = key.split(":", 1)[1] if ":" in key else None
+                    if not user_id:
+                        continue
+
+                    alerts = redis_client.hgetall(key)
+                    if not alerts:
+                        continue
+
+                    for field, target_val in alerts.items():
+                        try:
+                            target_price = float(target_val)
+                        except (ValueError, TypeError):
+                            continue
+
+                        # Trigger if price crosses the target (above or below)
+                        if current_price >= target_price:
+                            await notification_service.send_price_alert(
+                                user_id=user_id,
+                                price_data={
+                                    "symbol": field.split(":")[0] if ":" in field else "TON",
+                                    "current_price": current_price,
+                                    "target_price": target_price,
+                                    "price_change_24h": 0,
+                                    "price_change_percentage_24h": 0,
+                                },
+                            )
+                            # Remove triggered alert so it doesn't fire again
+                            redis_client.hdel(key, field)
+                            logger.info(f"Price alert triggered for user {user_id}: {field} >= {target_price}")
+                except Exception as inner_err:
+                    logger.warning(f"Price alert scan error for {key}: {inner_err}")
+
+        except Exception as e:
+            logger.error(f"Price alert polling error: {type(e).__name__}: {e}")
+
+        await asyncio.sleep(60)
+
+
 # FIX-7: Move Miniapp Server From Daemon Thread to asyncio.Task
 async def start_miniapp_server_async(config: dict):
     """Run the FastAPI miniapp server as a monitored asyncio task."""
@@ -153,80 +214,112 @@ async def start_miniapp_server_async(config: dict):
 
 
 async def on_startup():
-    """Startup handler with retry logic and error handling"""
-    logger.info("🚀 TonGPT initialization starting...")
+    """Startup handler — service initialization and background tasks only.
     
+    Handler registration is done in main() BEFORE start_polling() to guarantee
+    handlers are always available, regardless of service init outcome.
+    """
+    logger.info("🚀 TonGPT service initialization starting...")
+    
+    # FIX-7: Use asyncio.create_task for the miniapp server
+    try:
+        logger.info("🌐 Starting Mini-App server task...")
+        asyncio.create_task(
+            start_miniapp_server_async(config),
+            name="miniapp_server"
+        )
+    except Exception as e:
+        logger.warning(f"⚠️ Mini-App server task failed to create: {type(e).__name__}: {e}")
+    
+    # FIX-10: Initialize services with timeout + retry
+    services = {}
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            # FIX-7: Use asyncio.create_task for the miniapp server
-            logger.info("🌐 Starting Mini-App server task...")
-            asyncio.create_task(
-                start_miniapp_server_async(config),
-                name="miniapp_server"
-            )
-            
-            # FIX-10: Fix asyncio.wait_for Timeout to Use asyncio.timeout Context Manager
             logger.info("📦 Initializing services...")
-            # Using wait_for + context guard pattern or explicit if pre-3.11,
-            # but requirement specifies Python 3.11+ so asyncio.timeout is preferred.
             try:
                 has_asyncio_timeout = hasattr(asyncio, 'timeout')
                 if has_asyncio_timeout:
                     async with asyncio.timeout(30.0):
                         services = await initialize_all_services(config)
                 else:
-                     services = await asyncio.wait_for(
+                    services = await asyncio.wait_for(
                         initialize_all_services(config),
                         timeout=30.0
                     )
+                break  # Success — exit retry loop
             except (TimeoutError, asyncio.TimeoutError):
-                 logger.error(f"Service initialization timed out (attempt {attempt + 1}/{max_retries})")
-                 if attempt < max_retries - 1:
-                     await _backoff(attempt)  # FIX-9
-                 continue
-            
-            # FIX-3: Update global state to use ctx properties
-            ctx.gpt_handler = services.get('gpt_handler')
-            ctx.x_monitor = services.get('X_monitor') 
-            
-            # Initialize AdvancedRateLimiter so GPT/handlers can use create_rate_limit_decorator("ai_queries")
-            try:
-                from core.rate_limiting import get_rate_limiter
-                get_rate_limiter(redis_client)
-            except Exception as e:
-                # FIX-1: Replace Any bare except/generalized logs with strongly typed e logging
-                logger.warning(f"⚠️ Rate limiter (advanced) not initialized: {type(e).__name__}: {e}")
-            
-            # Start monitoring loop (Prometheus/metrics collection)
-            try:
-                from core.monitoring import monitoring_loop
-                asyncio.create_task(monitoring_loop(60))
-                logger.info("📊 Monitoring loop started (60s interval)")
-            except Exception as e:
-                 logger.warning(f"⚠️ Monitoring loop not started: {type(e).__name__}: {e}")
-            
-            # Register handlers after services are initialized
-            logger.info("🔗 Registering handlers...")
-            await register_all_handlers(ctx)  # FIX-6: Passes ctx
-            
-            # Set bot status in Redis (with fallback if Redis unavailable)
-            # FIX-8: Replace naked Redis calls with safe_redis
-            safe_redis("set", "bot_startup_time", int(time.time()))
-            safe_redis("set", "bot_status", "online")
-            
-            logger.info("[Bot] TonGPT is now running with enhanced capabilities!")
-            logger.info(f"[Web] Mini-App available at: http://localhost:{config.get('MINIAPP_PORT', 8000)}")
-            return
-            
+                logger.error(f"Service initialization timed out (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    await _backoff(attempt)  # FIX-9
+                continue
         except Exception as e:
-             # FIX-1: Already handled here with exc_info=True, just matching the style format
-             logger.error(f"Service initialization failed (attempt {attempt + 1}/{max_retries}): {type(e).__name__}: {e}", exc_info=True)
-             if attempt < max_retries - 1:
-                  await _backoff(attempt)  # FIX-9
-             else:
-                  logger.critical("Failed to initialize TonGPT after max retries - shutting down")
-                  raise
+            logger.error(f"Service initialization failed (attempt {attempt + 1}/{max_retries}): {type(e).__name__}: {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await _backoff(attempt)  # FIX-9
+            else:
+                logger.critical("All service init retries exhausted — bot will run with limited features")
+    
+    # FIX-3: Update global state to use ctx properties
+    ctx.gpt_handler = services.get('gpt_handler')
+    ctx.x_monitor = services.get('X_monitor')
+    
+    # Initialize AdvancedRateLimiter
+    try:
+        from core.rate_limiting import get_rate_limiter
+        get_rate_limiter(redis_client)
+    except Exception as e:
+        logger.warning(f"⚠️ Rate limiter (advanced) not initialized: {type(e).__name__}: {e}")
+    
+    # Start monitoring loop (Prometheus/metrics collection)
+    try:
+        from core.monitoring import monitoring_loop
+        asyncio.create_task(monitoring_loop(60))
+        logger.info("📊 Monitoring loop started (60s interval)")
+    except Exception as e:
+        logger.warning(f"⚠️ Monitoring loop not started: {type(e).__name__}: {e}")
+    
+    # Start wallet monitoring background task
+    try:
+        from services.monitor import monitor_followed_wallets
+        asyncio.create_task(
+            monitor_followed_wallets(),
+            name="wallet_monitor"
+        )
+        logger.info("👛 Wallet monitoring task started")
+    except Exception as e:
+        logger.warning(f"⚠️ Wallet monitor not started: {type(e).__name__}: {e}")
+    
+    # Start X/Twitter monitoring background task
+    try:
+        if ctx.x_monitor:
+            asyncio.create_task(
+                ctx.x_monitor.enhanced_monitoring_cycle(),
+                name="x_monitor"
+            )
+            logger.info("🐦 X monitoring task started")
+        else:
+            logger.info("ℹ️ X monitor not available — skipping")
+    except Exception as e:
+        logger.warning(f"⚠️ X monitor not started: {type(e).__name__}: {e}")
+    
+    # Start price alert polling loop
+    try:
+        asyncio.create_task(
+            price_alert_polling_loop(),
+            name="price_alert_poller"
+        )
+        logger.info("💰 Price alert polling task started")
+    except Exception as e:
+        logger.warning(f"⚠️ Price alert poller not started: {type(e).__name__}: {e}")
+    
+    # Set bot status in Redis (with fallback if Redis unavailable)
+    # FIX-8: Replace naked Redis calls with safe_redis
+    safe_redis("set", "bot_startup_time", int(time.time()))
+    safe_redis("set", "bot_status", "online")
+    
+    logger.info("[Bot] TonGPT is now running with enhanced capabilities!")
+    logger.info(f"[Web] Mini-App available at: http://localhost:{config.get('MINIAPP_PORT', 8000)}")
 
 async def on_shutdown():
     """Shutdown handler"""
@@ -389,13 +482,23 @@ async def main():
         # FIX-13: Log config using sanitise_config
         logger.debug(f"Loaded config: {sanitise_config(config)}")
         
-        # Initialize bot
+        # Initialize bot and dispatcher
         await initialize_bot()
+        
+        # ── Register ALL handlers BEFORE polling starts ──────────────────
+        # This guarantees handlers are always available, regardless of
+        # whether on_startup's service initialization succeeds or fails.
+        # Matches original_main.py pattern where core commands are
+        # registered at module level before start_polling.
+        logger.info("🔗 Registering handlers...")
+        await register_all_handlers(ctx)
         
         # FIX-11: Add allowed_updates Comment and Guard
         # IMPORTANT: Update this list whenever a new handler type is added.
-        # Omitting an update type here means Telegram will NOT send it — handlers will register but never fire.
+        # Omitting an update type here means Telegram will NOT send it.
         # Full list: https://core.telegram.org/bots/api#update
+        # NOTE: successful_payment is delivered inside Message objects,
+        # it is NOT a top-level update type and must NOT be listed here.
         ALLOWED_UPDATES = ["message", "callback_query", "pre_checkout_query"]
 
         # FIX-3: Use ctx

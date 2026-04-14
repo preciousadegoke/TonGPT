@@ -82,15 +82,13 @@ Keep responses under 500 words unless specifically asked for detailed analysis.
     async def get_chat_response(self, user_id: int, message: str, context: Optional[List[Dict]] = None) -> str:
         """Get AI response for user message with context"""
         try:
-            # Build conversation messages
-            messages = [{"role": "system", "content": self.system_prompt}]
-            
-            # Add conversation context if provided or from store
+            # Add conversation context if provided or from store, trimmed *before* building payload.
             history = context
             if history is None and user_id is not None:
                 history = await self.conversations.get(user_id)
-            if history:
-                messages.extend(history[-10:])  # Keep last 10 messages for context
+
+            history = history[-20:] if history else []
+            messages = [{"role": "system", "content": self.system_prompt}] + history
             
             # Add current user message
             messages.append({"role": "user", "content": message})

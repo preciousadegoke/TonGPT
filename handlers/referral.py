@@ -109,6 +109,8 @@ async def validate_pending_referral(user_id: int):
 
 
 def generate_referral_token(referrer_id: int) -> str:
+    if not REFERRAL_SECRET:
+        raise ValueError("REFERRAL_SECRET is not set — cannot generate referral tokens")
     key = REFERRAL_SECRET.encode() if isinstance(REFERRAL_SECRET, str) else REFERRAL_SECRET
     msg = str(referrer_id).encode()
     sig = hmac.new(key, msg, hashlib.sha256).hexdigest()[:16]
@@ -116,6 +118,9 @@ def generate_referral_token(referrer_id: int) -> str:
 
 
 def verify_referral_token(token: str) -> int | None:
+    if not REFERRAL_SECRET:
+        logger.error("REFERRAL_SECRET is not set — cannot verify referral tokens")
+        return None
     try:
         referrer_id_str, sig = token.rsplit("_", 1)
         referrer_id = int(referrer_id_str)
@@ -127,6 +132,51 @@ def verify_referral_token(token: str) -> int | None:
     except Exception:
         pass
     return None
+
+
+@router.message(Command("referral", "refer"))
+async def referral_command(message: types.Message):
+    """Show the user's HMAC-signed referral link and verified stats."""
+    user_id = message.from_user.id
+    try:
+        token = generate_referral_token(user_id)
+        bot_username = os.getenv("BOT_USERNAME", "TonGptt_bot")
+        referral_link = f"https://t.me/{bot_username}?start=ref_{token}"
+
+        rc = _redis()
+        verified = 0
+        pending = 0
+        if rc:
+            v = rc.get(f"referrals:{user_id}")
+            verified = int(v) if v else 0
+            pending = rc.scard(f"pending_referrals:{user_id}") if hasattr(rc, "scard") else 0
+
+        # Next reward milestone
+        if verified < 5:
+            next_reward = f"Starter Plan ({5 - verified} more)"
+        elif verified < 10:
+            next_reward = f"Pro Plan ({10 - verified} more)"
+        elif verified < 25:
+            next_reward = f"Elite Plan ({25 - verified} more)"
+        else:
+            next_reward = "All rewards unlocked! 🎉"
+
+        text = (
+            "🎁 <b>Your Referral Link</b>\n\n"
+            f"🔗 <code>{referral_link}</code>\n\n"
+            f"✅ Verified referrals: <b>{verified}</b>\n"
+            f"⏳ Pending referrals: <b>{pending}</b>\n"
+            f"🎯 Next reward: <b>{next_reward}</b>\n\n"
+            "📈 <b>How it works:</b>\n"
+            "1. Share your link with friends\n"
+            "2. They join and use the bot\n"
+            "3. Referral counts after 24h + 3 commands\n"
+            "4. Get automatic plan upgrades"
+        )
+        await message.reply(text, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Referral command error: {e}")
+        await message.reply("❌ Could not generate referral link. Please try again later.")
 
 
 def register_referral_handler(dp: Dispatcher):

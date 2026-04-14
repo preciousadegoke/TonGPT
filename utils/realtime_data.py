@@ -4,6 +4,7 @@ import requests
 import logging
 import time
 import json
+import collections
 from typing import Dict, List, Optional, Union, Any, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
@@ -100,7 +101,7 @@ class TONDataFetcher:
         }
         
         # Simple memory cache with TTL
-        self.cache = {}
+        self.cache = collections.OrderedDict()
         self.cache_ttl = {}
         self.default_cache_duration = 60  # 1 minute for most data
         self.price_cache_duration = 30    # 30 seconds for price data
@@ -147,6 +148,10 @@ class TONDataFetcher:
         duration = duration or self.default_cache_duration
         self.cache[key] = data
         self.cache_ttl[key] = time.time() + duration
+        # Evict oldest cache entries to prevent unbounded memory growth.
+        if len(self.cache) > 500:
+            old_key, _ = self.cache.popitem(last=False)
+            self.cache_ttl.pop(old_key, None)
 
     @backoff.on_exception(backoff.expo, requests.RequestException, max_tries=2, max_time=20)
     def _make_request(self, url: str, params: Dict = None, headers: Dict = None, timeout: int = 10) -> Optional[Dict]:

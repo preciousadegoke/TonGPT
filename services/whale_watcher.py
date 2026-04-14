@@ -1,8 +1,12 @@
 import requests
+import os
 from typing import List, Dict, Optional
 
 TON_API_BASE = "https://tonapi.io/v2"  # Replace with your actual source or endpoint
-HEADERS = {"Accept": "application/json"}
+HEADERS = {
+    "Accept": "application/json",
+    "Authorization": f"Bearer {os.getenv('TONAPI_KEY', '')}",
+}
 
 def fetch_recent_transactions(wallet_address: str, limit: int = 10) -> Optional[List[Dict]]:
     """

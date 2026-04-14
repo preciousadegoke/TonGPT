@@ -10,6 +10,11 @@ logger = logging.getLogger(__name__)
 ENGINE_API_KEY = os.getenv("ENGINE_API_KEY", "")
 
 
+class EngineServerError(Exception):
+    """Raised when the Engine API returns a 5xx server error."""
+
+
+
 class EngineClient:
     """
     Client for interactions with the C# TonGPT.Engine API.
@@ -29,21 +34,27 @@ class EngineClient:
             "Content-Type": "application/json",
         }
 
-    async def _get(self, endpoint: str) -> Dict[str, Any]:
+    async def _get(self, endpoint: str) -> Optional[Dict[str, Any]]:
         """Internal helper for GET requests"""
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.get(f"{self.base_url}/{endpoint}", headers=self._headers()) as response:
                     if response.status == 200:
                         return await response.json()
-                    elif response.status == 404:
-                         return None
-                    
+                    if response.status == 404:
+                        return None
+                    if 500 <= response.status < 600:
+                        text = await response.text()
+                        logger.error("Engine API GET %s failed with %s: %s", endpoint, response.status, text)
+                        raise EngineServerError(f"Engine GET {endpoint} -> {response.status}")
                     logger.warning(f"Engine API GET {endpoint} failed: {response.status}")
                     return {}
+            except EngineServerError:
+                raise
             except Exception as e:
                 logger.error(f"Engine API connection failed: {e}")
-                return {}
+                raise EngineServerError("Engine unreachable") from e
+
 
     async def _post(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Internal helper for POST requests"""
@@ -118,24 +129,29 @@ class EngineClient:
         """
         Get recent chat history formatted for AI context.
         Returns: List of {"role": "user/assistant", "content": "..."}
+        Raises EngineServerError if the engine is unreachable (L-10).
         """
-        # Assuming GET /api/Chat/history/{id}?limit=10 returns list of raw messages
-        result = await self._get(f"Chat/history/{telegram_id}?limit={limit}")
-        
-        # If API is not ready or returns empty, return empty list
-        if not result or not isinstance(result, list):
-            return []
+        try:
+            result = await self._get(f"Chat/history/{telegram_id}?limit={limit}")
 
-        # Convert to OpenAI format
-        context = []
-        # sort by time ascending if needed
-        for msg in result:
-            if "userMessage" in msg:
-                 context.append({"role": "user", "content": msg["userMessage"]})
-            if "aiResponse" in msg:
-                 context.append({"role": "assistant", "content": msg["aiResponse"]})
-        
-        return context
+            # If API is not ready or returns empty, return empty list
+            if not result or not isinstance(result, list):
+                return []
+
+            # Convert to OpenAI format
+            context = []
+            for msg in result:
+                if "userMessage" in msg:
+                    context.append({"role": "user", "content": msg["userMessage"]})
+                if "aiResponse" in msg:
+                    context.append({"role": "assistant", "content": msg["aiResponse"]})
+
+            return context
+        except EngineServerError:
+            raise  # let caller handle engine unavailability
+        except Exception as e:
+            logger.error("get_chat_context failed for %s: %s", telegram_id, e)
+            return []
 
     # ==========================================
     # Subscription & Payments
@@ -143,7 +159,18 @@ class EngineClient:
 
     async def get_user_status(self, telegram_id: str) -> Dict[str, Any]:
         """Check user subscription status"""
-        return await self._get(f"Subscription/status/{telegram_id}") or {"tier": "free", "credits": 0}
+        try:
+            result = await self._get(f"Subscription/status/{telegram_id}")
+        except EngineServerError:
+            return {"tier": "error", "credits": 0, "error": "engine_unavailable"}
+        if not result:
+            return {"tier": "free", "credits": 0}
+        plan = (result.get("Plan") or result.get("plan") or "Free")
+        return {
+            "tier": plan,
+            "credits": 0,
+            "expiry": result.get("Expiry") or result.get("expiry"),
+        }
 
     async def record_payment(self, telegram_id: str, plan: str, provider: str, external_id: str = None) -> Optional[str]:
         """Record a completed payment. Returns payment_id (guid string) for use in upgrade_user."""

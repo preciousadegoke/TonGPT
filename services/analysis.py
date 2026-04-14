@@ -117,7 +117,13 @@ def process_sentiment_data(tweet_data: List[Dict]) -> Dict:
     
     total = len(tweet_data)
     if total == 0:
-        return process_sentiment_data([])
+        return {
+            "overall_sentiment": "neutral",
+            "bullish_percentage": 33.0,
+            "bearish_percentage": 33.0,
+            "neutral_percentage": 34.0,
+            "confidence": "low",
+        }
     
     bullish_pct = (bullish_count / total) * 100
     bearish_pct = (bearish_count / total) * 100
@@ -343,11 +349,11 @@ def is_memecoin_only(token: Dict) -> bool:
 # Cache management utilities
 def get_cache_stats() -> Dict[str, Any]:
     """Get cache performance statistics"""
-    return get_cache_manager().get_stats()
+    return cache_manager.get_stats()
 
 def clear_cache_pattern(pattern: str = None) -> int:
     """Clear cache entries matching pattern or all if no pattern"""
-    cache_mgr = get_cache_manager()
+    cache_mgr = cache_manager
     
     if pattern:
         # Clear memory cache entries matching pattern
@@ -374,7 +380,7 @@ def clear_cache_pattern(pattern: str = None) -> int:
 
 def cleanup_expired_cache():
     """Clean up expired cache entries"""
-    cache_mgr = get_cache_manager()
+    cache_mgr = cache_manager
     current_time = datetime.now()
     
     expired_keys = [

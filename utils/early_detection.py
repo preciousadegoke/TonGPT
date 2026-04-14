@@ -397,7 +397,7 @@ class EarlyDetectionDatabase:
                 logger.error(f"Error fetching detections: {e}")
                 return []
 
-class EarlyMemecoindDetector:
+class EarlyMemecoinDetector:
     """Main early detection system"""
     
     def __init__(self):
@@ -463,7 +463,7 @@ class EarlyMemecoindDetector:
         self.running = False
 
 # Global instance for use in handlers
-early_detector = EarlyMemecoindDetector()
+early_detector = EarlyMemecoinDetector()
 
 # Utility functions for backward compatibility
 def _merge_and_rank_detections(new_detections: List[Dict], recent_detections: List[Dict], limit: int = 20) -> List[Dict]:

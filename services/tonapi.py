@@ -46,9 +46,6 @@ def _get_ton_price_cached() -> float:
     return _TON_PRICE_CACHE["price"]
 
 
-# API Configuration
-TONAPI_BASE_URL = "https://tonapi.io/v2"
-TONAPI_KEY = os.getenv("TONAPI_KEY")  # Optional - TON API works without auth for basic requests
 
 
 async def get_ton_price_usd() -> float:
@@ -146,11 +143,12 @@ class EnhancedTONAPIClient:
             
             # Add enhanced fields
             balance_ton = int(data.get('balance', 0)) / 1e9  # Convert from nanotons
+            ton_price_usd = _get_ton_price_cached()
             
             enhanced_data = {
                 **data,  # Keep original data
                 'balance_ton': balance_ton,
-                'balance_usd': self._estimate_usd_value(balance_ton),
+                'balance_usd': self._estimate_usd_value(balance_ton, ton_price_usd),
                 'whale_category': self._classify_whale_size(balance_ton),
                 'last_activity_formatted': self._format_timestamp(data.get('last_activity', 0))
             }
@@ -283,6 +281,7 @@ class EnhancedTONAPIClient:
         """Get large TON transactions (whale movements)"""
         try:
             transactions = []
+            ton_price_usd = _get_ton_price_cached()
             
             # Method 1: Get transactions from known whale addresses
             whale_addresses = self._get_known_whale_addresses()
@@ -302,7 +301,7 @@ class EnhancedTONAPIClient:
                                 'timestamp': tx.get('timestamp', 0),
                                 'type': self._classify_transaction_type(tx),
                                 'whale_category': self._classify_whale_size(amount / 1e9),
-                                'usd_value': self._estimate_usd_value(amount / 1e9),
+                                'usd_value': self._estimate_usd_value(amount / 1e9, ton_price_usd),
                                 'method': 'whale_address_tracking'
                             })
                 except Exception as e:
@@ -471,28 +470,8 @@ class EnhancedTONAPIClient:
         else:
             return 'regular'
     
-    def _estimate_usd_value(self, amount_ton: float) -> float:
-        """Estimate USD value of TON amount using live market data.
-
-        This method performs a blocking HTTP request and should not be called
-        from performance‑critical or latency‑sensitive paths.
-        """
-        try:
-            resp = requests.get(
-                "https://api.coingecko.com/api/v3/simple/price",
-                params={"ids": "the-open-network", "vs_currencies": "usd"},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            price = data["the-open-network"]["usd"]
-            if not isinstance(price, (int, float)) or price <= 0:
-                raise ValueError(f"Invalid TON price: {price}")
-            ton_price_usd = float(price)
-        except Exception as e:
-            logger.error(f"Failed to fetch TON/USD price: {e}")
-            raise
-
+    def _estimate_usd_value(self, amount_ton: float, ton_price_usd: float) -> float:
+        """Estimate USD value of TON amount using a pre-fetched price."""
         return amount_ton * ton_price_usd
     
     def _format_timestamp(self, timestamp: int) -> str:

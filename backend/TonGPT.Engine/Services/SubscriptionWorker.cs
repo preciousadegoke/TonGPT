@@ -128,15 +128,16 @@ namespace TonGPT.Engine.Services
                                  var tierHex = stack[0].GetProperty("value").GetString(); // "0x1"
                                  var expiryHex = stack[1].GetProperty("value").GetString(); // "0x..."
                                  
-                                 int tier = Convert.ToInt32(tierHex, 16);
+                                 long tier = Convert.ToInt64(tierHex, 16);
                                  long expiryTimestamp = Convert.ToInt64(expiryHex, 16);
                                  
-                                 // Map to Plan
+                                 // H-14: Tier values are nanoton amounts from the Tact contract
+                                 // (constants.tact: TIER_STARTER=1e9, TIER_PRO=5e9, TIER_WHALE=20e9)
                                  var newPlan = tier switch
                                  {
-                                     1 => SubscriptionPlan.Starter,
-                                     2 => SubscriptionPlan.Pro,
-                                     3 => SubscriptionPlan.Elite,
+                                     1_000_000_000L => SubscriptionPlan.Starter,
+                                     5_000_000_000L => SubscriptionPlan.Pro,
+                                     20_000_000_000L => SubscriptionPlan.Elite,
                                      _ => SubscriptionPlan.Free
                                  };
 

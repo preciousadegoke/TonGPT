@@ -15,9 +15,10 @@ router = Router()
 PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
 
 PLAN_PRICES_USD = {
-    "basic": 9.99,
-    "pro": 19.99,
-    "enterprise": 49.99,
+    "starter": 4.99,
+    "pro": 14.99,
+    "pro_plus": 29.99,
+    "elite": 49.99,
 }
 
 
@@ -62,11 +63,16 @@ async def activate_payment_idempotent(
     await activate_premium_plan(user_id, plan_key, PLANS.get(plan_key, {}), payment_record_id=payment_id)
 
 # Plan configurations with Telegram Stars pricing
+# price_ton aligned with Tact contract constants:
+#   TIER_STARTER = 1_000_000_000 nanoTON = 1 TON
+#   TIER_PRO     = 5_000_000_000 nanoTON = 5 TON
+#   TIER_WHALE   = 20_000_000_000 nanoTON = 20 TON (Elite)
+# Stars prices kept proportional (~75⭐ per TON).
 PLANS = {
     "starter": {
         "name": "Starter Plan",
-        "price_ton": 30,
-        "price_stars": 100,  # 100 Telegram Stars
+        "price_ton": 1,
+        "price_stars": 75,
         "duration_days": 30,
         "features": [
             "100 AI queries per day",
@@ -78,14 +84,14 @@ PLANS = {
         "whale_threshold": 100
     },
     "pro": {
-        "name": "Pro Plan", 
-        "price_ton": 130,
-        "price_stars": 400,  # 400 Telegram Stars
+        "name": "Pro Plan",
+        "price_ton": 5,
+        "price_stars": 375,
         "duration_days": 30,
         "features": [
             "500 AI queries per day",
             "Advanced whale alerts",
-            "Priority support", 
+            "Priority support",
             "Custom notifications",
             "Portfolio tracking"
         ],
@@ -94,8 +100,8 @@ PLANS = {
     },
     "pro_plus": {
         "name": "Pro+ Plan",
-        "price_ton": 200,
-        "price_stars": 600,  # 600 Telegram Stars  
+        "price_ton": 10,
+        "price_stars": 750,
         "duration_days": 30,
         "features": [
             "1000 AI queries per day",
@@ -109,13 +115,13 @@ PLANS = {
     },
     "elite": {
         "name": "Elite Plan",
-        "price_ton": 300,
-        "price_stars": 1000,  # 1000 Telegram Stars
+        "price_ton": 20,
+        "price_stars": 1500,
         "duration_days": 30,
         "features": [
             "Unlimited AI queries",
             "VIP whale alerts",
-            "Custom API access", 
+            "Custom API access",
             "Direct developer support",
             "1-on-1 support calls"
         ],
@@ -161,12 +167,12 @@ async def pay_command(message: types.Message):
     # Inline keyboard with payment options
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [
-            types.InlineKeyboardButton(text="🥉 Starter - 100⭐", callback_data="pay_stars_starter"),
-            types.InlineKeyboardButton(text="🥈 Pro - 400⭐", callback_data="pay_stars_pro")
+            types.InlineKeyboardButton(text="🥉 Starter - 75⭐", callback_data="pay_stars_starter"),
+            types.InlineKeyboardButton(text="🥈 Pro - 375⭐", callback_data="pay_stars_pro")
         ],
         [
-            types.InlineKeyboardButton(text="🥇 Pro+ - 600⭐", callback_data="pay_stars_pro_plus"),
-            types.InlineKeyboardButton(text="💎 Elite - 1000⭐", callback_data="pay_stars_elite")
+            types.InlineKeyboardButton(text="🥇 Pro+ - 750⭐", callback_data="pay_stars_pro_plus"),
+            types.InlineKeyboardButton(text="💎 Elite - 1500⭐", callback_data="pay_stars_elite")
         ],
         [
             types.InlineKeyboardButton(text="🪙 TON Payment", callback_data="pay_ton"),
@@ -441,8 +447,62 @@ async def plan_details_callback(callback_query: types.CallbackQuery):
 @router.callback_query(lambda c: c.data == "back_to_payment")
 async def back_to_payment_callback(callback_query: types.CallbackQuery):
     """Go back to main payment screen"""
-    # Simulate the pay command
-    await pay_command(callback_query.message)
+    user_id = callback_query.from_user.id
+    user_name = callback_query.from_user.first_name or "User"
+
+    # Check current user status
+    current_plan = await get_user_plan(user_id)
+
+    payment_menu_text = (
+        f"💎 <b>TonGPT Premium Plans</b>\n\n"
+        f"👤 <b>User:</b> {user_name} (ID: {user_id})\n"
+        f"📋 <b>Current Plan:</b> {current_plan}\n\n"
+        f"🌟 <b>Payment via Telegram Stars</b>\n"
+        f"💰 Easy, instant, and secure!\n\n"
+        f"📦 <b>Available Plans:</b>\n"
+    )
+
+    # Add plan details
+    for plan_key, plan in PLANS.items():
+        features_text = "\n".join([f"  • {feature}" for feature in plan["features"][:3]])
+        payment_menu_text += (
+            f"\n🎯 <b>{plan['name']}</b> - {plan['price_stars']} ⭐\n"
+            f"{features_text}\n"
+        )
+
+    payment_menu_text += (
+        f"\n💳 <b>Payment Methods:</b>\n"
+        f"⭐ Telegram Stars (instant)\n"
+        f"🪙 TON Wallet (manual)\n"
+        f"💎 Crypto payments (manual)\n\n"
+        f"🎁 <b>Special:</b> Use /refer to earn free access!"
+    )
+
+    # Inline keyboard with payment options
+    payment_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="🥉 Starter - 75⭐", callback_data="pay_stars_starter"),
+            types.InlineKeyboardButton(text="🥈 Pro - 375⭐", callback_data="pay_stars_pro"),
+        ],
+        [
+            types.InlineKeyboardButton(text="🥇 Pro+ - 750⭐", callback_data="pay_stars_pro_plus"),
+            types.InlineKeyboardButton(text="💎 Elite - 1500⭐", callback_data="pay_stars_elite"),
+        ],
+        [
+            types.InlineKeyboardButton(text="🪙 TON Payment", callback_data="pay_ton"),
+            types.InlineKeyboardButton(text="ℹ️ Plan Details", callback_data="plan_details"),
+        ],
+        [
+            types.InlineKeyboardButton(text="🎁 Referrals", callback_data="referrals"),
+            types.InlineKeyboardButton(text="📊 Check Status", callback_data=f"check_status_{user_id}"),
+        ]
+    ])
+
+    await callback_query.message.edit_text(
+        payment_menu_text,
+        parse_mode="HTML",
+        reply_markup=payment_keyboard,
+    )
 
 # Helper functions
 async def get_user_plan(user_id: int) -> str:

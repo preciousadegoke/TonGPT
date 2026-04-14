@@ -4,6 +4,7 @@ import json
 import os
 import logging
 from dotenv import load_dotenv
+import html
 from utils.redis_conn import redis_client
 
 logger = logging.getLogger(__name__)
@@ -49,10 +50,13 @@ def analyze_tweets():
             user = users.get(tweet.author_id)
             if user and user.public_metrics['followers_count'] > 10000:
                 sentiment = TextBlob(tweet.text).sentiment.polarity
+                # Escape tweet text before storing/returning to prevent Telegram HTML injection.
+                text = html.escape(tweet.text[:200])
+                text = text + "..." if len(tweet.text) > 200 else text
                 results.append({
                     "user": user.username,
                     "name": user.name,
-                    "text": tweet.text[:200] + "..." if len(tweet.text) > 200 else tweet.text,
+                    "text": text,
                     "sentiment": "bullish" if sentiment > 0.1 else "bearish" if sentiment < -0.1 else "neutral",
                     "followers": user.public_metrics['followers_count'],
                     "verified": user.verified,
