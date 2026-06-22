@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>TonGPT — TON AI Intelligence</title>
+
+    <!-- Telegram WebApp SDK must load before the app so window.Telegram exists on first render. -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+    <!-- Anti-FOUC: paint the Telegram background colour immediately, before JS hydrates. -->
+    <script>
+      (function () {
+        try {
+          var tp = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.themeParams;
+          var bg = (tp && tp.bg_color) || '#000000';
+          document.documentElement.style.background = bg;
+          var scheme = (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.colorScheme) || 'dark';
+          document.documentElement.classList.add(scheme);
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

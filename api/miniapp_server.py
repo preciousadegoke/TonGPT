@@ -144,13 +144,20 @@ def create_miniapp_server() -> FastAPI:
             
     app.add_middleware(IPRateLimitMiddleware)
 
-    # Mount static files for the mini-app
+    # Mount static files for the mini-app.
+    # The v2 app (Preact/Vite) builds to a `dist/` folder, so prefer that. We try,
+    # in order: miniapp/dist (promoted v2), miniapp-v2/dist (v2 not yet renamed),
+    # then a bare miniapp/ (legacy raw-static fallback). `html=True` serves
+    # index.html for client-side routes.
     import os as _os
-    if _os.path.isdir("miniapp"):
-        app.mount("/miniapp", StaticFiles(directory="miniapp"), name="miniapp")
+    _candidates = ["miniapp/dist", "miniapp-v2/dist", "miniapp"]
+    _served = next((d for d in _candidates if _os.path.isdir(d)), None)
+    if _served:
+        app.mount("/miniapp", StaticFiles(directory=_served, html=True), name="miniapp")
+        logger.info(f"Mini-App static files served from: {_served}")
     else:
-        logger.warning("miniapp/ directory not found — static file serving disabled")
-    
+        logger.warning("No mini-app build found (looked for miniapp/dist, miniapp-v2/dist, miniapp) — static serving disabled")
+
     return app
 
 # Create the app instance
@@ -645,6 +652,99 @@ async def get_payment_info(plan: str = "Pro"):
     if not address:
         raise HTTPException(status_code=500, detail="Payment address not configured")
     return {"address": address, "plan": plan}
+
+
+@miniapp.post("/api/subscription/stars-invoice")
+async def create_stars_invoice(request: Request, body: dict):
+    """
+    Mint a Telegram Stars invoice link for the Mini-App.
+
+    The browser can't call the Bot API directly (no bot token client-side), so the
+    Mini-App POSTs here and we return an `invoice_url` that the front-end opens with
+    `Telegram.WebApp.openInvoice()`.
+
+    This reuses the bot's EXISTING payment pipeline: the payload `premium_{plan_key}`
+    is exactly what `handlers/pay.py`'s `pre_checkout_query` + `successful_payment`
+    handlers already validate and use to activate the plan — so NO changes are
+    needed there. Prices come from the single source of truth, `core/pricing.py`.
+    """
+    # 1. Authenticate the Telegram user (same HMAC check as every other route).
+    try:
+        tg_user = verify_telegram_init_data(request.headers.get("X-Telegram-Init-Data", ""))
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid Telegram init data")
+
+    # 2. Resolve the plan from the canonical pricing table.
+    from core.pricing import PLANS
+    plan_key = (body or {}).get("plan", "")
+    plan = PLANS.get(plan_key)
+    if not plan:
+        raise HTTPException(status_code=400, detail="Invalid plan")
+
+    # 3. Grab the live aiogram Bot instance (set via set_bot() at startup).
+    from core.bot_instance import get_bot
+    bot = get_bot()
+    if bot is None:
+        raise HTTPException(status_code=503, detail="Bot not ready")
+
+    # 4. Create the invoice link.
+    #    IMPORTANT: Telegram Stars (XTR) require an EMPTY provider_token.
+    #    amount is in the smallest Stars unit (price_stars * 100), matching the
+    #    bot's existing send_invoice path for consistency.
+    from aiogram.types import LabeledPrice
+    logger.info(f"Creating Stars invoice for user={tg_user.get('id')} plan={plan_key}")
+    try:
+        invoice_url = await bot.create_invoice_link(
+            title=f"TonGPT {plan['name']}",
+            description=f"Upgrade to {plan['name']} (1 month).",
+            payload=f"premium_{plan_key}",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label=plan["name"], amount=plan["price_stars"] * 100)],
+        )
+    except Exception as e:
+        logger.error(f"create_stars_invoice failed for plan={plan_key}: {e}")
+        raise HTTPException(status_code=502, detail="Could not create invoice")
+
+    return {"invoice_url": invoice_url}
+
+
+@miniapp.get("/api/wallet/balance")
+async def wallet_balance(address: str):
+    """
+    Return a wallet's TON balance (in TON, not nanotons) for the Mini-App Wallet
+    screen. Proxying through the backend keeps any API keys server-side and avoids
+    CORS. The front-end falls back to public toncenter if this route is absent, so
+    it's optional but preferred.
+    """
+    if not address:
+        raise HTTPException(status_code=400, detail="Missing address")
+
+    network = os.getenv("TON_NETWORK", "mainnet").lower()
+    base = (
+        "https://testnet.toncenter.com/api/v2/getAddressBalance"
+        if network == "testnet"
+        else "https://toncenter.com/api/v2/getAddressBalance"
+    )
+    # Optional API key raises toncenter rate limits.
+    api_key = os.getenv("TONCENTER_API_KEY", "")
+    params = {"address": address}
+    if api_key:
+        params["api_key"] = api_key
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            r = await client.get(base, params=params)
+            data = r.json()
+        if not data.get("ok"):
+            raise HTTPException(status_code=502, detail="Balance unavailable")
+        return {"balance": int(data["result"]) / 1_000_000_000}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"wallet_balance failed for {address}: {e}")
+        raise HTTPException(status_code=502, detail="Balance unavailable")
 
 
 @miniapp.get("/api/health")

@@ -1,0 +1,31 @@
+{
+  "name": "tongpt-miniapp",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TonGPT Telegram Mini-App — Preact + Vite + TypeScript",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "analyze": "npx vite-bundle-visualizer",
+    "tunnel": "lt --port 5173 --subdomain tongpt"
+  },
+  "dependencies": {
+    "@preact/signals": "^1.3.0",
+    "@tonconnect/ui": "^2.0.9",
+    "preact": "^10.24.0",
+    "preact-iso": "^2.9.0"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.9.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.13",
+    "terser": "^5.34.0",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8",
+    "vite-plugin-pwa": "^0.20.5"
+  }
+}
