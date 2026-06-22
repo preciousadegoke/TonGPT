@@ -17,7 +17,7 @@ class GPTEngine:
     Supports OpenRouter and OpenAI.
     """
     
-    def __init__(self, api_key: Optional[str] = None, model: str = "openai/gpt-4"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "meta-llama/llama-3.1-8b-instruct"):
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         self.model = model
         self.base_url = "https://openrouter.ai/api/v1/chat/completions"

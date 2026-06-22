@@ -4,6 +4,8 @@ from aiogram.types import LabeledPrice, PreCheckoutQuery, Message
 import logging
 import os
 import hashlib
+import time
+import httpx
 from services.engine_client import engine_client
 from utils.redis_conn import redis_client
 from services.tonapi import get_ton_price_usd
@@ -14,12 +16,13 @@ router = Router()
 # Payment configuration
 PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
 
-PLAN_PRICES_USD = {
-    "starter": 4.99,
-    "pro": 14.99,
-    "pro_plus": 29.99,
-    "elite": 49.99,
-}
+# FIX-2: Contract address for TonConnect deep links
+CONTRACT_ADDRESS = "0QBeYwn1b3YMHrcF07KwXx3GNbktcvAJ_8ByAlZKZMdHOO5H"
+TONCENTER_BASE_URL = "https://testnet.toncenter.com/api/v2"
+
+# Pricing is defined in ONE place — core/pricing.py — and imported everywhere
+# (pay.py, services/ton_payments.py, the docs) so the numbers can never drift.
+from core.pricing import PLANS, PLAN_PRICES_USD  # canonical single source of truth
 
 
 async def validate_payment_amount(
@@ -46,89 +49,98 @@ async def validate_payment_amount(
     return plan_key
 
 
-async def activate_payment_idempotent(
-    user_id: int, charge_id: str, plan_key: str
-):
-    key = f"payment_activated:{hashlib.sha256(charge_id.encode()).hexdigest()}"
-    claimed = redis_client.set(key, "1", ex=86400) if redis_client else None
-    if not claimed:
-        return  # Duplicate webhook — skip silently
-    payment_id = await engine_client.record_payment(
-        str(user_id), plan_key, "telegram_stars", external_id=charge_id
-    )
-    if not payment_id:
-        logger.error(f"Payment recording failed for user {user_id} plan {plan_key} — skipping activation")
-        return
-    await engine_client.log_activity(user_id, "payment_completed", {"plan": plan_key, "provider": "telegram_stars"})
-    await activate_premium_plan(user_id, plan_key, PLANS.get(plan_key, {}), payment_record_id=payment_id)
+async def _activate_with_resilience(
+    *, user_id: int, engine_plan: str, provider: str,
+    charge_id: str, duration_days: int, plan_key: str,
+) -> dict:
+    """Activate a subscription with Postgres as the single source of truth.
 
-# Plan configurations with Telegram Stars pricing
-# price_ton aligned with Tact contract constants:
-#   TIER_STARTER = 1_000_000_000 nanoTON = 1 TON
-#   TIER_PRO     = 5_000_000_000 nanoTON = 5 TON
-#   TIER_WHALE   = 20_000_000_000 nanoTON = 20 TON (Elite)
-# Stars prices kept proportional (~75⭐ per TON).
-PLANS = {
-    "starter": {
-        "name": "Starter Plan",
-        "price_ton": 1,
-        "price_stars": 75,
-        "duration_days": 30,
-        "features": [
-            "100 AI queries per day",
-            "Basic market alerts",
-            "Standard response speed",
-            "Email support"
-        ],
-        "queries_per_day": 100,
-        "whale_threshold": 100
-    },
-    "pro": {
-        "name": "Pro Plan",
-        "price_ton": 5,
-        "price_stars": 375,
-        "duration_days": 30,
-        "features": [
-            "500 AI queries per day",
-            "Advanced whale alerts",
-            "Priority support",
-            "Custom notifications",
-            "Portfolio tracking"
-        ],
-        "queries_per_day": 500,
-        "whale_threshold": 50
-    },
-    "pro_plus": {
-        "name": "Pro+ Plan",
-        "price_ton": 10,
-        "price_stars": 750,
-        "duration_days": 30,
-        "features": [
-            "1000 AI queries per day",
-            "Real-time market data",
-            "Advanced analytics",
-            "API access (100 calls/day)",
-            "Advanced charts"
-        ],
-        "queries_per_day": 1000,
-        "whale_threshold": 25
-    },
-    "elite": {
-        "name": "Elite Plan",
-        "price_ton": 20,
-        "price_stars": 1500,
-        "duration_days": 30,
-        "features": [
-            "Unlimited AI queries",
-            "VIP whale alerts",
-            "Custom API access",
-            "Direct developer support",
-            "1-on-1 support calls"
-        ],
-        "queries_per_day": -1,  # Unlimited
-        "whale_threshold": 10
-    }
-}
+    Flow:
+      1. Attempt the ATOMIC record+activate in Postgres (idempotent, retried).
+      2. If that fails for a *transient* reason (Engine/network down), persist
+         the activation to a durable on-disk queue so a background loop can
+         finish it later. We do NOT depend on Redis for this — Redis may be the
+         very thing that's down.
+      3. If it fails *permanently* (e.g. invalid plan), do not queue; surface it.
+
+    Returns the normalized result dict from EngineClient.complete_payment, with
+    an extra ``queued: True`` flag when it was deferred to the durable queue.
+
+    IMPORTANT: a subscription is NEVER granted without a confirmed payment row in
+    Postgres — activation only happens inside Payment/complete's transaction.
+    """
+    try:
+        result = await engine_client.complete_payment(
+            telegram_id=user_id,
+            plan=engine_plan,
+            provider=provider,
+            external_id=charge_id,
+            duration_days=duration_days,
+        )
+    except Exception as e:
+        logger.error(f"complete_payment raised for user {user_id}: {e}")
+        result = {"ok": False, "permanent": False, "error": str(e)}
+
+    if result.get("ok"):
+        # Reset the daily usage counter (best-effort; not a source of truth).
+        try:
+            if redis_client:
+                redis_client.delete(f"usage_today:{user_id}")
+        except Exception as e:
+            logger.debug(f"usage reset skipped: {e}")
+        return result
+
+    if result.get("permanent"):
+        logger.error(
+            f"Permanent activation failure user={user_id} plan={plan_key}: "
+            f"{result.get('message') or result.get('error')}"
+        )
+        return result
+
+    # Transient failure — durably queue for background reconciliation.
+    try:
+        from services.activation_queue import enqueue
+        await enqueue({
+            "user_id": user_id,
+            "plan": engine_plan,
+            "provider": provider,
+            "external_id": charge_id,
+            "duration_days": duration_days,
+            "plan_key": plan_key,
+        })
+        result["queued"] = True
+    except Exception as e:
+        # Last-resort: even queueing failed. Log loudly so ops can recover from
+        # the structured payment_received log + Telegram's own payment record.
+        logger.critical(
+            f"ACTIVATION_LOST_RISK user={user_id} plan={plan_key} "
+            f"charge_id={charge_id}: failed to queue activation: {e}"
+        )
+        result["queued"] = False
+    return result
+
+
+def _success_message(plan: dict) -> str:
+    """Build the upgrade-confirmation message for a freshly activated plan."""
+    msg = (
+        f"✅ <b>Payment Successful!</b>\n\n"
+        f"🎯 <b>Plan:</b> {plan['name']}\n"
+        f"⏱️ <b>Duration:</b> {plan['duration_days']} days\n\n"
+        f"🚀 <b>Your new features:</b>\n"
+    )
+    for feature in plan["features"]:
+        msg += f"• {feature}\n"
+    msg += (
+        f"\n💡 <b>Try these commands:</b>\n"
+        f"/scan - Enhanced token analysis\n"
+        f"/whale - Premium whale alerts\n"
+        f"/stats - Check your subscription\n\n"
+        f"🎉 Welcome to TonGPT Premium!"
+    )
+    return msg
+
+# PLANS is imported from core.pricing (single source of truth) — see the import
+# near the top of this file. Do not redefine pricing here.
 
 @router.message(Command("pay", "subscribe"))
 async def pay_command(message: types.Message):
@@ -167,12 +179,12 @@ async def pay_command(message: types.Message):
     # Inline keyboard with payment options
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [
-            types.InlineKeyboardButton(text="🥉 Starter - 75⭐", callback_data="pay_stars_starter"),
-            types.InlineKeyboardButton(text="🥈 Pro - 375⭐", callback_data="pay_stars_pro")
+            types.InlineKeyboardButton(text="🥉 Starter - 1335⭐", callback_data="pay_stars_starter"),
+            types.InlineKeyboardButton(text="🥈 Pro - 4000⭐", callback_data="pay_stars_pro")
         ],
         [
-            types.InlineKeyboardButton(text="🥇 Pro+ - 750⭐", callback_data="pay_stars_pro_plus"),
-            types.InlineKeyboardButton(text="💎 Elite - 1500⭐", callback_data="pay_stars_elite")
+            types.InlineKeyboardButton(text="🥇 Pro+ - 8000⭐", callback_data="pay_stars_pro_plus"),
+            types.InlineKeyboardButton(text="💎 Elite - 16000⭐", callback_data="pay_stars_elite")
         ],
         [
             types.InlineKeyboardButton(text="🪙 TON Payment", callback_data="pay_ton"),
@@ -262,79 +274,94 @@ async def successful_payment_handler(message: Message):
 
     plan_key = validated_plan
     plan = PLANS.get(plan_key)
-    
-    if plan:
-        charge_id = getattr(payment, "telegram_payment_charge_id", None) or str(payment.total_amount)
-        await activate_payment_idempotent(user_id=user_id, charge_id=charge_id, plan_key=plan_key)
 
-        # Track revenue
-        stars_received = payment.total_amount // 100
-        redis_client.incrbyfloat("revenue_stars", stars_received)
-        redis_client.incrbyfloat(f"revenue_{plan_key}", stars_received)
-        
-        # Send confirmation
-        confirmation_msg = (
-            f"✅ <b>Payment Successful!</b>\n\n"
-            f"🎯 <b>Plan:</b> {plan['name']}\n"
-            f"⏱️ <b>Duration:</b> {plan['duration_days']} days\n"
-            f"💫 <b>Paid:</b> {stars_received} Telegram Stars\n\n"
-            f"🚀 <b>Your new features:</b>\n"
+    if not plan:
+        # Should be impossible (validate_payment_amount already checked), but
+        # never silently drop a paid order.
+        logger.error(f"Validated plan missing from PLANS: {plan_key} (user {user_id})")
+        await message.reply(
+            "✅ <b>Payment received.</b> We're finalizing your upgrade — if it isn't "
+            f"active shortly, contact @TonGPT_Support with User ID <code>{user_id}</code>.",
+            parse_mode="HTML",
         )
-        
-        for feature in plan['features']:
-            confirmation_msg += f"• {feature}\n"
-        
-        confirmation_msg += (
-            f"\n💡 <b>Try these commands:</b>\n"
-            f"/scan - Enhanced token analysis\n"
-            f"/whale - Premium whale alerts\n"
-            f"/portfolio - Track your holdings\n"
-            f"/status - Check your subscription\n\n"
-            f"🎉 Welcome to TonGPT Premium!"
+        return
+
+    # Idempotency key: Telegram's charge id is globally unique per payment.
+    # Postgres (via the unique index on ExternalId) is the idempotency authority
+    # — NOT Redis. A deterministic fallback keeps retries dedupable in the
+    # (extremely unlikely) case Telegram omits the charge id.
+    charge_id = getattr(payment, "telegram_payment_charge_id", None)
+    if not charge_id:
+        charge_id = "fallback_" + hashlib.sha256(
+            f"{user_id}:{payment.invoice_payload}:{payment.total_amount}:{payment.currency}".encode()
+        ).hexdigest()[:32]
+        logger.warning(f"No telegram_payment_charge_id; using deterministic fallback for user {user_id}")
+
+    engine_plan = _plan_to_engine(plan_key)
+    duration_days = plan.get("duration_days", 30)
+    stars_received = payment.total_amount // 100
+
+    logger.info(
+        f"payment_received user={user_id} plan={plan_key} charge_id={charge_id} "
+        f"amount={payment.total_amount}{payment.currency}"
+    )
+
+    # ── Activate via Postgres (atomic, idempotent), resilient to Engine outages ──
+    result = await _activate_with_resilience(
+        user_id=user_id, engine_plan=engine_plan, provider="telegram_stars",
+        charge_id=charge_id, duration_days=duration_days, plan_key=plan_key,
+    )
+
+    # Best-effort revenue metrics — must NEVER gate or fail the activation.
+    try:
+        if redis_client:
+            redis_client.incrbyfloat("revenue_stars", stars_received)
+            redis_client.incrbyfloat(f"revenue_{plan_key}", stars_received)
+    except Exception as e:
+        logger.debug(f"revenue metric skipped: {e}")
+
+    # ── Always reply reassuringly. The user paid; never imply failure. ──
+    if result.get("ok"):
+        if result.get("already_processed"):
+            await message.reply(
+                f"✅ <b>You're all set!</b>\n\n"
+                f"This payment was already applied — your <b>{plan['name']}</b> is active.",
+                parse_mode="HTML",
+            )
+        else:
+            await message.reply(_success_message(plan), parse_mode="HTML")
+        logger.info(
+            f"payment_activated user={user_id} plan={plan_key} stars={stars_received} "
+            f"already={result.get('already_processed')}"
         )
-        
-        await message.reply(confirmation_msg, parse_mode="HTML")
-        
-        # Log the successful payment
-        logger.info(f"Premium activated: User {user_id}, Plan {plan_key}, Stars {stars_received}")
+    else:
+        # Engine was unreachable but we durably queued the activation — it will
+        # complete within minutes. Do not tell the user it failed.
+        await message.reply(
+            f"✅ <b>Payment received — thank you!</b>\n\n"
+            f"Your <b>{plan['name']}</b> is being activated and will be live within a few minutes.\n"
+            f"If anything looks off after 10 minutes, contact @TonGPT_Support with "
+            f"User ID <code>{user_id}</code>.",
+            parse_mode="HTML",
+        )
+        logger.error(
+            f"payment_activation_deferred user={user_id} plan={plan_key} "
+            f"charge_id={charge_id} queued={result.get('queued')} error={result.get('error')}"
+        )
 
 # TON Payment Handler
 @router.callback_query(lambda c: c.data == "pay_ton")
 async def handle_ton_payment(callback_query: types.CallbackQuery):
-    """Handle TON payment option"""
-    user_id = callback_query.from_user.id
-    
-    ton_payment_msg = (
-        f"🪙 <b>TON Payment Options</b>\n\n"
-        f"📋 <b>Manual TON Payment Plans:</b>\n\n"
-    )
-    
-    for plan_key, plan in PLANS.items():
-        ton_payment_msg += (
-            f"🎯 <b>{plan['name']}</b> - {plan['price_ton']} TON\n"
-            f"  • {plan['queries_per_day']} queries/day {'(unlimited)' if plan['queries_per_day'] == -1 else ''}\n"
-            f"  • Whale alerts >{plan['whale_threshold']} TON\n\n"
-        )
-    
-    ton_payment_msg += (
-        f"💳 <b>Payment Process:</b>\n"
-        f"1. Contact @TonGPT_Support\n"
-        f"2. Send your plan choice + user ID: {user_id}\n"
-        f"3. Get payment wallet address\n"
-        f"4. Send TON and get instant activation\n\n"
-        f"⚡ <b>Why choose TON payment?</b>\n"
-        f"• Direct blockchain transaction\n"
-        f"• Lower fees than traditional payment\n"
-        f"• Support the TON ecosystem\n"
-        f"• Get exclusive TON holder benefits"
-    )
-    
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="💬 Contact Support", url="https://t.me/TonGPT_Support")],
-        [types.InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_payment")]
-    ])
-    
-    await callback_query.message.edit_text(ton_payment_msg, parse_mode="HTML", reply_markup=keyboard)
+    """Handle the 'TON Payment' button.
+
+    Delegates to the automated, memo-based TON flow in
+    handlers/ton_payment_handler.py. That module shows the plan picker, the exact
+    amount + address + memo + QR, and a background monitor activates the
+    subscription automatically once the transfer confirms on-chain. If the TON
+    path is not yet enabled/configured, the user is told to use Telegram Stars.
+    """
+    from handlers.ton_payment_handler import show_plan_selection
+    await show_plan_selection(callback_query)
 
 # Other callback handlers (referrals, status, etc.)
 @router.callback_query(lambda c: c.data == "referrals")
@@ -481,12 +508,12 @@ async def back_to_payment_callback(callback_query: types.CallbackQuery):
     # Inline keyboard with payment options
     payment_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [
-            types.InlineKeyboardButton(text="🥉 Starter - 75⭐", callback_data="pay_stars_starter"),
-            types.InlineKeyboardButton(text="🥈 Pro - 375⭐", callback_data="pay_stars_pro"),
+            types.InlineKeyboardButton(text="🥉 Starter - 1335⭐", callback_data="pay_stars_starter"),
+            types.InlineKeyboardButton(text="🥈 Pro - 4000⭐", callback_data="pay_stars_pro"),
         ],
         [
-            types.InlineKeyboardButton(text="🥇 Pro+ - 750⭐", callback_data="pay_stars_pro_plus"),
-            types.InlineKeyboardButton(text="💎 Elite - 1500⭐", callback_data="pay_stars_elite"),
+            types.InlineKeyboardButton(text="🥇 Pro+ - 8000⭐", callback_data="pay_stars_pro_plus"),
+            types.InlineKeyboardButton(text="💎 Elite - 16000⭐", callback_data="pay_stars_elite"),
         ],
         [
             types.InlineKeyboardButton(text="🪙 TON Payment", callback_data="pay_ton"),

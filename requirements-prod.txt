@@ -1,1 +1,3 @@
- 
+# Production-only dependencies (installed on top of requirements.txt)
+sentry-sdk[fastapi]==2.22.0    # Error tracking & APM in production
+gunicorn==23.0.0               # Production WSGI/ASGI process manager (optional, uvicorn used directly for now)

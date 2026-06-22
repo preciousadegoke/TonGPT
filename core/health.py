@@ -64,7 +64,7 @@ async def health_check(bot=None, gpt_handler=None, X_monitor=None, subscription_
     # Check TON API
     try:
         from services.tonapi import test_ton_api_connection
-        status = test_ton_api_connection()
+        status = await test_ton_api_connection()  # now async
         health_status["ton_api"] = status.get("api_status") == "online"
     except ImportError:
         logger.warning("TON API module not found")

@@ -284,6 +284,100 @@ class SafeRedisClient:
                 logger.error(f"Redis RPOP error: {e}")
         return None
 
+    # ------------------------------------------------------------------ #
+    # Sorted-set / pipeline / key methods required by the rate limiter.
+    # These were previously MISSING, which made the rate limiter raise
+    # AttributeError and fail. (P0 fix — see core/rate_limiter.py.)
+    # ------------------------------------------------------------------ #
+    def pipeline(self, transaction: bool = True):
+        """Return a real redis pipeline, or a no-op stand-in if unavailable.
+
+        The rate limiter prefers the raw client, but exposing pipeline() here
+        keeps the wrapper a faithful, complete Redis surface.
+        """
+        if self.client:
+            try:
+                return self.client.pipeline(transaction=transaction)
+            except Exception as e:
+                logger.error(f"Redis PIPELINE error: {e}")
+        return _NoOpPipeline()
+
+    def zcard(self, key: str):
+        if self.client:
+            try:
+                return self.client.zcard(key)
+            except Exception as e:
+                logger.error(f"Redis ZCARD error: {e}")
+        return 0
+
+    def zcount(self, key: str, min_score, max_score):
+        if self.client:
+            try:
+                return self.client.zcount(key, min_score, max_score)
+            except Exception as e:
+                logger.error(f"Redis ZCOUNT error: {e}")
+        return 0
+
+    def zremrangebyscore(self, key: str, min_score, max_score):
+        if self.client:
+            try:
+                return self.client.zremrangebyscore(key, min_score, max_score)
+            except Exception as e:
+                logger.error(f"Redis ZREMRANGEBYSCORE error: {e}")
+        return 0
+
+    def setex(self, key: str, seconds: int, value):
+        if self.client:
+            try:
+                return self.client.setex(key, seconds, value)
+            except Exception as e:
+                logger.error(f"Redis SETEX error: {e}")
+        return False
+
+    def keys(self, pattern: str = "*"):
+        if self.client:
+            try:
+                return self.client.keys(pattern)
+            except Exception as e:
+                logger.error(f"Redis KEYS error: {e}")
+        return []
+
+    def __getattr__(self, name):
+        """Fallback: delegate any not-explicitly-wrapped method to the raw client.
+
+        This guarantees the wrapper is never *missing* a Redis method (the root
+        cause of the rate-limiter bug). Explicitly wrapped methods above take
+        precedence; this only fires for attributes not found normally.
+
+        Note: ``self.client`` is read via __dict__ to avoid recursing through
+        __getattr__ during initialization.
+        """
+        client = self.__dict__.get("client")
+        if client is not None and hasattr(client, name):
+            return getattr(client, name)
+        raise AttributeError(name)
+
+
+class _NoOpPipeline:
+    """Minimal pipeline stand-in used when Redis is unavailable.
+
+    Buffers chained calls and returns an empty result list on execute(), so
+    callers that expect a list (e.g. results[1]) degrade instead of crashing.
+    """
+
+    def __init__(self):
+        self._n = 0
+
+    def __getattr__(self, _name):
+        def _chain(*_a, **_k):
+            self._n += 1
+            return self
+        return _chain
+
+    def execute(self):
+        return [0] * self._n
+
+
 # Export safe Redis client
 safe_redis_client = SafeRedisClient(redis_client)
 

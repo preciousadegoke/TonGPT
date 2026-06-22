@@ -3,6 +3,9 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from utils.redis_conn import redis_client
+import logging
+
+logger = logging.getLogger(__name__)
 
 class AlertStates(StatesGroup):
     WaitingForToken = State()
@@ -29,7 +32,7 @@ async def alerts_price(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Please enter a valid number for the price.")
     except Exception as e:
-        print(f"Alerts Error: {e}")
+        logger.error(f"Alerts Error: {e}")
         await message.answer(f"⚠️ Error setting alert: {e}")
     await state.clear()
 

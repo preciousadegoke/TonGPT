@@ -1,6 +1,9 @@
 from aiogram import Dispatcher, types
 from aiogram.filters import Command
 from services.stonfi_api import fetch_top_ston_pools
+import logging
+
+logger = logging.getLogger(__name__)
 
 async def handle_ston_command(message: types.Message):
     await message.answer("Fetching top STON.fi pools...")
@@ -21,7 +24,7 @@ async def handle_ston_command(message: types.Message):
             await message.answer(msg, parse_mode="HTML")
 
     except Exception as e:
-        print(f"STON Error: {e}")
+        logger.error(f"STON Error: {e}")
         await message.answer(f"⚠️ Error fetching data: {e}")
 
 def register_ston_handlers(dp: Dispatcher):

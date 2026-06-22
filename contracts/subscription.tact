@@ -27,7 +27,9 @@ contract Subscription with Deployable {
         // Range checks against top-level constants (no self. prefix)
         let tier: Int = 0;
 
-        if (ctx.value >= TIER_WHALE) {
+        if (ctx.value >= TIER_ELITE) {
+            tier = 4;
+        } else if (ctx.value >= TIER_PRO_PLUS) {
             tier = 3;
         } else if (ctx.value >= TIER_PRO) {
             tier = 2;
@@ -96,7 +98,8 @@ contract Subscription with Deployable {
     get fun price(tier: Int): Int {
         if (tier == 1) { return TIER_STARTER; }
         if (tier == 2) { return TIER_PRO; }
-        if (tier == 3) { return TIER_WHALE; }
+        if (tier == 3) { return TIER_PRO_PLUS; }
+        if (tier == 4) { return TIER_ELITE; }
         return 0;
     }
 }

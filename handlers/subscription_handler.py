@@ -1,12 +1,7 @@
 from aiogram import Router, types
 from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
-from typing import Optional
-from dataclasses import dataclass, asdict
-from enum import Enum
 
 logger = logging.getLogger(__name__)
 
@@ -91,29 +86,35 @@ async def connect_wallet(message: types.Message):
 
 
 @router.message(Command("upgrade"))
-@router.message(Command("upgrade"))
-async def start_upgrade(message: types.Message, state: FSMContext):
-    """Start subscription upgrade process"""
-    # Using the same callbacks as pay.py to unify the flow
+async def start_upgrade(message: types.Message, **kwargs):
+    """Start subscription upgrade process — sends a single message with all plans"""
+    # Prices aligned with pay.py PLANS dict (Starter 75⭐, Pro 375⭐, Pro+ 750⭐, Elite 1500⭐)
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="🥉 Starter - 100⭐", callback_data="pay_stars_starter")],
-        [types.InlineKeyboardButton(text="🥈 Pro - 400⭐", callback_data="pay_stars_pro")],
-        [types.InlineKeyboardButton(text="🥇 Pro+ - 600⭐", callback_data="pay_stars_pro_plus")],
-        [types.InlineKeyboardButton(text="🪙 TON Payment", callback_data="pay_ton")]
+        [
+            types.InlineKeyboardButton(text="🥉 Starter - 75⭐", callback_data="pay_stars_starter"),
+            types.InlineKeyboardButton(text="🥈 Pro - 375⭐", callback_data="pay_stars_pro"),
+        ],
+        [
+            types.InlineKeyboardButton(text="🥇 Pro+ - 750⭐", callback_data="pay_stars_pro_plus"),
+            types.InlineKeyboardButton(text="💎 Elite - 1500⭐", callback_data="pay_stars_elite"),
+        ],
+        [
+            types.InlineKeyboardButton(text="🪙 TON Payment", callback_data="pay_ton"),
+            types.InlineKeyboardButton(text="ℹ️ Plan Details", callback_data="plan_details"),
+        ]
     ])
-    
+
     await message.reply(
         "🚀 <b>Upgrade Your Plan</b>\n\n"
         "Choose a plan to upgrade instantly using Telegram Stars or TON:\n\n"
-        "🥉 <b>Starter</b>: 100 queries/day\n"
-        "🥈 <b>Pro</b>: 500 queries/day + Alerts\n"
-        "🥇 <b>Pro+</b>: 1000 queries/day + Analytics\n\n"
+        "🥉 <b>Starter</b> (75⭐ / 1 TON): 100 queries/day\n"
+        "🥈 <b>Pro</b> (375⭐ / 5 TON): 500 queries/day + Alerts\n"
+        "🥇 <b>Pro+</b> (750⭐ / 10 TON): 1000 queries/day + Analytics\n"
+        "💎 <b>Elite</b> (1500⭐ / 20 TON): Unlimited + VIP support\n\n"
         "👇 <b>Select an option:</b>",
         parse_mode="HTML",
         reply_markup=keyboard
     )
-    # We don't need to set state here as pay.py handles the callbacks gracefully without state
-    # await state.set_state(SubscriptionStates.choosing_tier)
 
 def register_subscription_handlers(dp, config=None, redis_client=None):
     """Register subscription handlers"""

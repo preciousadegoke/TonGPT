@@ -1,5 +1,6 @@
-const TIER_STARTER: Int = 1000000000;
-const TIER_PRO: Int     = 5000000000;
-const TIER_WHALE: Int   = 20000000000;
-const DURATION: Int     = 2592000;
-const MIN_RESERVE: Int  = 50000000;
+const TIER_STARTER: Int  = 10000000000;
+const TIER_PRO: Int      = 30000000000;
+const TIER_PRO_PLUS: Int = 60000000000;
+const TIER_ELITE: Int    = 120000000000;
+const DURATION: Int      = 2592000;
+const MIN_RESERVE: Int   = 50000000;

@@ -80,7 +80,7 @@ async def test_connections(config: Dict[str, Any]) -> None:
     # Test TON API connection
     try:
         from services.tonapi import test_ton_api_connection
-        api_status = test_ton_api_connection()
+        api_status = await test_ton_api_connection()  # now async
         if api_status.get('api_status') == 'online':
             logger.info("✅ TON API connection successful")
         else:

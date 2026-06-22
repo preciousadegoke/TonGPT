@@ -1,11 +1,16 @@
 # handlers/gpt_reply.py - FIXED
-import logging
+# Handles /ask command, general text messages, and catch-all for unmatched messages.
+# This module MUST be registered LAST in HANDLER_MODULES (main.py) because it
+# contains the catch-all @router.message() handler.
+
 import re
-from aiogram import Router, types
+
+import structlog
+from aiogram import F, Router, types
 from aiogram.filters import Command
 from gpt.engine import ask_gpt
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Create router for this module
 router = Router()
@@ -26,6 +31,40 @@ def sanitize_user_input(text: str) -> str:
         text = re.sub(p, "[removed]", text)
     return text
 
+
+async def _moderation_allows(message: types.Message, text: str, user_id: int) -> bool:
+    """Content-moderation gate. Returns True if the message may proceed to GPT.
+
+    Part of the main error flow: any failure to even reach the moderation
+    service is caught here and treated as ALLOW (fail-open), so the bot never
+    goes down because moderation is unavailable. When content is blocked, the
+    user gets a friendly reply and we return False.
+    """
+    try:
+        from services.moderation_service import moderate_text
+        result = await moderate_text(text, user_id=user_id)
+    except Exception as e:
+        # Last-resort guard (e.g. import error). Default to allowing.
+        logger.error("moderation_unavailable", user_id=user_id, err=str(e), exc_info=True)
+        return True
+
+    # Log every outcome clearly: warnings for flagged content, info otherwise.
+    log = logger.warning if result.flagged else logger.info
+    log(
+        "moderation_checked",
+        user_id=user_id,
+        allowed=result.allowed,
+        flagged=result.flagged,
+        categories=result.categories,
+        error=result.error,
+    )
+
+    if not result.allowed:
+        await message.reply(result.user_message or "🚫 Sorry, I can't help with that request.")
+        return False
+    return True
+
+
 async def _handle_gpt_query_impl(message: types.Message):
     """Handle GPT queries from users with comprehensive error handling (inner impl for rate-limit decorator)."""
     try:
@@ -39,18 +78,24 @@ async def _handle_gpt_query_impl(message: types.Message):
         if not question:
             await message.reply("❌ Please provide a question after /ask")
             return
-        
+
+        user_id = message.from_user.id
+
+        # ---- Safety gate: content moderation must pass before we call GPT ----
+        if not await _moderation_allows(message, question, user_id):
+            return
+
         try:
             await message.bot.send_chat_action(message.chat.id, "typing")
         except Exception as e:
-            logger.warning(f"Failed to send chat action: {e}")
+            logger.warning("send_chat_action_failed", err=str(e))
         
         # Risk Scoring and Model Downgrading
         model_override = None
-        user_id = message.from_user.id
-        
+        # user_id already resolved above for the moderation gate.
+
         try:
-            from core.rate_limiting import get_rate_limiter
+            from core.rate_limiter import get_rate_limiter
             limiter = get_rate_limiter()
             if limiter:
                 ip_address = getattr(message, "_ip_address", None)
@@ -66,22 +111,22 @@ async def _handle_gpt_query_impl(message: types.Message):
                 
                 if risk_tier == "High Risk":
                     await message.reply("⚠️ Your account is temporarily restricted due to suspicious activity. Please verify your account.")
-                    logger.warning(f"BLOCKED High Risk user {user_id} (Score: {risk_score})")
+                    logger.warning("blocked_high_risk_user", user_id=user_id, risk_score=risk_score)
                     return
                 elif risk_tier == "Suspicious":
                     model_override = "openai/gpt-4o-mini"
-                    logger.warning(f"DOWNGRADED Suspicious user {user_id} (Score: {risk_score}) to {model_override}")
+                    logger.warning("downgraded_suspicious_user", user_id=user_id, risk_score=risk_score, model=model_override)
                 elif risk_tier == "Watch":
-                    logger.info(f"WATCH user {user_id} (Score: {risk_score}) active.")
+                    logger.info("watch_user_active", user_id=user_id, risk_score=risk_score)
         except Exception as e:
-            logger.debug(f"Risk evaluation skipped: {e}")
+            logger.debug("risk_evaluation_skipped", err=str(e))
 
         # Get response from GPT with timeout
         try:
             response = await ask_gpt(question, model=model_override, user_id=user_id)
         except Exception as e:
             await message.reply("🚫 Error processing your request. Please try again later.")
-            logger.error(f"GPT request error for user {message.from_user.id}: {e}", exc_info=True)
+            logger.error("gpt_request_error", user_id=user_id, err=str(e), exc_info=True)
             return
         
         if response:
@@ -95,31 +140,31 @@ async def _handle_gpt_query_impl(message: types.Message):
                         else:
                             await message.answer(part)
                     except Exception as e:
-                        logger.error(f"Failed to send message part {i+1}: {e}")
+                        logger.error("message_part_send_failed", part=i + 1, err=str(e))
             else:
                 await message.reply(response)
         else:
             await message.reply("⚠️ No response generated. Please try again.")
             
     except Exception as e:
-        logger.error(f"Unexpected error in GPT query handler: {e}", exc_info=True)
+        logger.error("gpt_query_unexpected_error", err=str(e), exc_info=True)
         try:
             await message.reply("❌ An unexpected error occurred. Please try again later.")
         except Exception as send_error:
-            logger.error(f"Failed to send error message: {send_error}")
-        await message.reply("❌ Error processing your request. Please try again.")
+            logger.error("error_message_send_failed", err=str(send_error))
 
-# Apply AdvancedRateLimiter via decorator when available (Guardrail 4: rate limit GPT endpoints)
-def _wrap_with_rate_limit(handler):
-    try:
-        from core.rate_limiting import create_rate_limit_decorator, get_rate_limiter
-        if get_rate_limiter():
-            return create_rate_limit_decorator("ai_queries")(handler)
-    except Exception as e:
-        logger.debug("Rate limit decorator not applied: %s", e)
-    return handler
+# Rate-limit the GPT endpoint (the most expensive call we make).
+#
+# P0 FIX: the decorator resolves the LIVE limiter at *call time* (see
+# core/rate_limiter.create_rate_limit_decorator), so applying it here at import
+# time — before the limiter singleton is created — is safe and correct.
+#
+# The previous implementation checked get_rate_limiter() at import time, found
+# None (the limiter was created later in on_startup), and silently shipped this
+# handler with NO rate limiting at all. That is now impossible.
+from core.rate_limiter import create_rate_limit_decorator
 
-handle_gpt_query = _wrap_with_rate_limit(_handle_gpt_query_impl)
+handle_gpt_query = create_rate_limit_decorator("ai_queries")(_handle_gpt_query_impl)
 
 # Register command handler
 @router.message(Command("ask"))
@@ -127,11 +172,34 @@ async def ask_command(message: types.Message):
     await handle_gpt_query(message)
 
 # Register general message handler (for non-command messages)
-@router.message()
+@router.message(F.text & ~F.text.startswith('/'))
 async def handle_general_message(message: types.Message):
     """Handle all non-command messages with GPT"""
-    if message.text and not message.text.startswith('/'):
-        await handle_gpt_query(message)
+    await handle_gpt_query(message)
+
+
+# P0-FIX-4: Catch-all handler for unrecognized commands and any other unmatched messages.
+# This MUST be registered last (gpt_reply is already last in HANDLER_MODULES).
+# Without this, unknown /commands like /foobar get silently dropped.
+@router.message()
+async def catch_all_handler(message: types.Message):
+    """Catch-all: reply to any message not matched by earlier handlers."""
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        # Unknown command
+        cmd = text.split()[0]  # e.g. "/foobar"
+        await message.reply(
+            f"❓ <b>Unknown command:</b> <code>{cmd}</code>\n\n"
+            "💡 Use /help to see all available commands.",
+            parse_mode="HTML",
+        )
+    else:
+        # Non-text or media message we can't handle — acknowledge
+        await message.reply(
+            "🤖 I can only process text messages.\n"
+            "💡 Use /help to see available commands.",
+        )
+
 
 # Registration function for main.py
 def register_gpt_reply_handlers(dp):

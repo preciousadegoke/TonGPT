@@ -1,7 +1,6 @@
 import asyncio
 import time
 from datetime import datetime
-import logging
 from aiogram import Router, types, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import (
@@ -29,7 +28,8 @@ except ImportError:
     TonWallet = None
 
 # Initialize logging
-logger = logging.getLogger(__name__)
+import structlog
+logger = structlog.get_logger(__name__)
 
 # Initialize rate limiter with proper error handling
 try:
@@ -84,6 +84,33 @@ ton_wallet = TonWallet() if TonWallet else None
 
 # Create router for commands
 router = Router()
+
+
+def _is_valid_ton_address(address: str) -> bool:
+    """Basic TON address validation.
+    Valid formats:
+      - User-friendly: starts with EQ or UQ, ~48 chars (base64url)
+      - Raw hex: 64 hex chars (256-bit)
+    """
+    if not address:
+        return False
+    # User-friendly base64url format
+    if address[:2] in ("EQ", "UQ") and 46 <= len(address) <= 50:
+        return True
+    # Raw hex format (workchain:hash)
+    stripped = address.replace(":", "").replace("-", "")
+    if len(stripped) == 64:
+        try:
+            int(stripped, 16)
+            return True
+        except ValueError:
+            pass
+    # Colon-separated format (e.g. 0:abcdef...)
+    if ":" in address:
+        parts = address.split(":", 1)
+        if len(parts) == 2 and len(parts[1]) == 64:
+            return True
+    return False
 
 # Global subscription manager removed - using EngineClient directly
 
@@ -345,13 +372,12 @@ async def start_command(message: types.Message):
         await engine_client.log_activity(user_id, "start_command", {"tier": user_tier, "username": username})
         
     except Exception as e:
-        await engine_client.log_activity(user_id, "start_command", {"error": str(e), "success": False})
+        logger.error(f"Start command error for user {user_id}: {e}")
         await message.answer("❌ Sorry, something went wrong. Please try again later.")
-        logger.error(f"Start command error: {e}")
 
 @router.message(Command("help"))
 @monitor_function("bot_command_help")
-async def help_command(message: types.Message):
+async def help_command(message: types.Message, **kwargs):
     """Comprehensive help command with monitoring"""
     user_id = message.from_user.id
     
@@ -608,8 +634,8 @@ async def scan_command(message: types.Message):
 
 @router.message(Command("info"))
 @monitor_function("bot_command_info")
-async def info_command(message: types.Message):
-    """Enhanced info command with monitoring and better error handling"""
+async def info_command(message: types.Message, **kwargs):
+    """Enhanced info command with monitoring, address validation, and better error handling"""
     user_id = message.from_user.id
     
     try:
@@ -621,22 +647,51 @@ async def info_command(message: types.Message):
         args = command_text.split() if command_text else []
         
         if not args:
-            await message.reply("❌ Usage: /info <contract_address>")
+            await message.reply(
+                "❌ <b>Usage:</b> /info <code>&lt;contract_address&gt;</code>\n\n"
+                "💡 <b>Example:</b>\n"
+                "<code>/info EQAvlWFDxGF2lXm67y4yzC17wYKD9A0guwPkMs1gOsM__NOT</code>\n\n"
+                "Accepts EQ.../UQ... or raw hex addresses.",
+                parse_mode="HTML"
+            )
             return
             
         contract = args[0]
+
+        # P0-FIX: Validate address format before hitting the API
+        if not _is_valid_ton_address(contract):
+            await message.reply(
+                "❌ <b>Invalid contract address format</b>\n\n"
+                f"Received: <code>{contract[:60]}</code>\n\n"
+                "💡 TON addresses should:\n"
+                "• Start with <code>EQ</code> or <code>UQ</code> (~48 chars), or\n"
+                "• Be a raw hex hash (64 hex characters)\n\n"
+                "Example: <code>/info EQAvlWFDxGF2lXm67y4yzC17wYKD9A0guwPkMs1gOsM__NOT</code>",
+                parse_mode="HTML"
+            )
+            return
         
         start_time = time.time()
         
         try:
-            data = get_token_info_from_tonviewer(contract)
+            data = await get_token_info_from_tonviewer(contract)
             response_time = (time.time() - start_time) * 1000
             
             if prometheus:
                 prometheus.record_request("tonviewer_api", "success", response_time / 1000)
             
             if not data:
-                await message.reply("❌ Token not found or invalid contract address.")
+                logger.warning("token_info_empty", contract=contract, response_time_ms=response_time)
+                await message.reply(
+                    "❌ <b>Token not found</b>\n\n"
+                    f"Contract: <code>{contract}</code>\n\n"
+                    "Possible reasons:\n"
+                    "• Address is not a Jetton contract\n"
+                    "• Token not yet indexed by TonAPI\n"
+                    "• Address is a wallet, not a token\n\n"
+                    "💡 Try copying the address from a DEX or explorer.",
+                    parse_mode="HTML"
+                )
                 return
                 
             name = data.get("name", "Unknown")
@@ -663,17 +718,23 @@ async def info_command(message: types.Message):
             if prometheus:
                 prometheus.record_request("tonviewer_api", "error", response_time / 1000)
             
-            logger.error(f"Token info API error: {api_error}")
-            await message.reply("❌ Unable to fetch token information.")
+            logger.error("token_info_api_error", contract=contract, err=f"{type(api_error).__name__}: {api_error}", response_time_ms=response_time)
+            await message.reply(
+                "❌ <b>Unable to fetch token information</b>\n\n"
+                f"Contract: <code>{contract}</code>\n"
+                f"Error: <code>{type(api_error).__name__}</code>\n\n"
+                "Please try again in a few moments.",
+                parse_mode="HTML"
+            )
             
     except Exception as e:
         await log_user_action(user_id, "info_command", False, {"error": str(e)})
-        logger.error(f"Info command error: {e}")
+        logger.error("info_command_error", err=str(e))
         await message.reply("❌ An error occurred.")
 
 @router.message(Command("trending"))
 @monitor_function("bot_command_trending")
-async def trending_command(message: types.Message):
+async def trending_command(message: types.Message, **kwargs):
     """Enhanced trending command with monitoring and categorization"""
     user_id = message.from_user.id
     
@@ -736,105 +797,16 @@ async def trending_command(message: types.Message):
 
 # ==================== SUBSCRIPTION COMMANDS ====================
 
-@router.message(Command("subscription", "sub"))
-async def subscription_status_command(message: types.Message):
-    """Display detailed subscription status with monitoring"""
-    user_id = message.from_user.id
-    
-    async with monitor_request("bot_command_subscription", user_id):
-        try:
-            # Get status from C# Engine
-            status_data = await engine_client.get_user_status(str(user_id))
-            tier = status_data.get("plan", "Free").lower()
-            
-            # Determine credits/limits from local config/Redis backup
-            limit_key = f"plan_queries:{user_id}"
-            usage_key = f"usage_today:{user_id}"
-            
-            if redis_client:
-                limit = redis_client.get(limit_key)
-                limit = int(limit) if limit and int(limit) != -1 else (10000 if tier != 'free' else 10)
-                if limit == -1: limit = "Unlimited"
-                
-                usage = redis_client.get(usage_key)
-                usage = int(usage) if usage else 0
-                credits_remaining = "Unlimited" if limit == "Unlimited" else (limit - usage)
-            else:
-                credits_remaining = "Unknown"
-
-            status_text = (
-                f"💎 <b>Your Subscription Details</b>\n\n"
-                f"📋 Current Plan: <b>{tier.title()}</b>\n"
-                f"⚡ Credits Remaining: <b>{credits_remaining}</b>\n"
-            )
-            
-            expiry = status_data.get("expiry")
-            if expiry:
-                try:
-                    dt = datetime.fromisoformat(expiry.replace('Z', '+00:00'))
-                    status_text += f"📅 Expires: <b>{dt.strftime('%Y-%m-%d %H:%M')}</b>\n"
-                except:
-                    status_text += f"📅 Expires: <b>{expiry}</b>\n"
-            else:
-                status_text += f"📅 Plan: <b>Permanent (Free Tier)</b>\n"
-            
-            # status_text += f"📊 Member Since: <b>{subscription.created_at.strftime('%Y-%m-%d')}</b>\n\n"
-            
-            # Show plan benefits
-            if tier == "free":
-                status_text += (
-                    "🆓 <b>Free Plan Features:</b>\n"
-                    "• 100 credits/month\n"
-                    "• 10 requests/hour\n"
-                    "• Basic memecoin analysis\n\n"
-                    "🚀 <b>Want More?</b>\n"
-                    "Use /upgrade for premium features!"
-                )
-            elif tier == "basic":
-                status_text += (
-                    "🥉 <b>Basic Plan Features:</b>\n"
-                    "• 1,000 credits/month\n"
-                    "• 100 requests/hour\n"
-                    "• Advanced AI analysis\n"
-                    "• Priority support\n\n"
-                    "🏆 Upgrade to Premium for even more!"
-                )
-            else:  # premium
-                status_text += (
-                    "🏆 <b>Premium Plan Features:</b>\n"
-                    "• 10,000 credits/month\n"
-                    "• 1,000 requests/hour\n"
-                    "• Real-time whale alerts\n"
-                    "• X monitoring alerts\n"
-                    "• VIP support\n"
-                    "• All features unlocked!"
-                )
-            
-            # Add upgrade button for non-premium users
-            if tier != "premium":
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🚀 Upgrade Now", callback_data="start_upgrade")],
-                    [InlineKeyboardButton(text="💬 Support", url="https://t.me/TonGPT_Support")]
-                ])
-                await message.reply(status_text, parse_mode="HTML", reply_markup=keyboard)
-            else:
-                await message.reply(status_text, parse_mode="HTML")
-            
-            await log_user_action(user_id, "view_subscription", True, {
-                "tier": tier,
-                "credits_remaining": credits_remaining
-            })
-            
-        except Exception as e:
-            await log_user_action(user_id, "view_subscription", False, {"error": str(e)})
-            logger.error(f"Subscription status error: {e}")
-            await message.reply("❌ Unable to fetch subscription status.")
+# NOTE: /subscription and /sub handlers REMOVED from bot/commands.py (P0-FIX-3)
+# The canonical handler lives in handlers/subscription_handler.py which registers
+# Command("subscription", "sub") and Command("upgrade"). Having them in both files
+# caused duplicate messages because the router was included twice.
 
 # ==================== SOCIAL & UTILITY COMMANDS ====================
 
 @router.message(Command("app"))
 @monitor_function("bot_command_app")
-async def open_app_command(message: types.Message):
+async def open_app_command(message: types.Message, **kwargs):
     """Launch Mini App with monitoring"""
     user_id = message.from_user.id
     
@@ -853,6 +825,151 @@ async def open_app_command(message: types.Message):
         await log_user_action(user_id, "open_app", False, {"error": str(e)})
         logger.error(f"App command error: {e}")
         await message.reply("❌ Unable to launch app right now.")
+
+# ==================== STUB COMMANDS (referenced in /help) ====================
+
+@router.message(Command("stats"))
+async def stats_command(message: types.Message, **kwargs):
+    """Show basic user stats — queries used, plan, member since"""
+    user_id = message.from_user.id
+
+    plan = "Free"
+    queries_today = 0
+    member_since = "N/A"
+
+    # 1. Try Engine first
+    try:
+        status_data = await engine_client.get_user_status(str(user_id))
+        plan = (status_data.get("plan") or "Free").title()
+        member_since = status_data.get("created_at", "N/A")
+        if member_since and member_since != "N/A":
+            try:
+                dt = datetime.fromisoformat(str(member_since).replace("Z", "+00:00"))
+                member_since = dt.strftime("%Y-%m-%d")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug(f"Engine unavailable for /stats: {e}")
+
+    # 2. Fallback to Redis for usage count
+    try:
+        if redis_client:
+            usage = redis_client.get(f"usage_today:{user_id}")
+            queries_today = int(usage) if usage else 0
+    except Exception as e:
+        logger.debug(f"Redis unavailable for /stats: {e}")
+
+    # 3. Live AI-query quota usage from the canonical rate limiter (read-only).
+    quota_text = ""
+    try:
+        from core.rate_limiter import get_rate_limiter
+        limiter = get_rate_limiter()
+        if limiter:
+            q = await limiter.get_quota_status(user_id, plan.lower(), "ai_queries")
+            windows = q.get("windows", {})
+            lines = []
+            for label, key in (("This minute", "minute"), ("This hour", "hour"), ("Today", "day")):
+                w = windows.get(key)
+                if w:
+                    lines.append(f"  • {label}: {w['used']}/{w['limit']}")
+            if lines:
+                header = "🧮 <b>AI Quota Usage</b>"
+                if q.get("degraded"):
+                    header += " <i>(safe mode)</i>"
+                quota_text = "\n" + header + "\n" + "\n".join(lines) + "\n"
+    except Exception as e:
+        logger.debug(f"Quota status unavailable for /stats: {e}")
+
+    stats_text = (
+        f"📊 <b>Your Stats</b>\n\n"
+        f"👤 <b>User ID:</b> {user_id}\n"
+        f"📋 <b>Plan:</b> {plan}\n"
+        f"🔢 <b>Queries Today:</b> {queries_today}\n"
+        f"📅 <b>Member Since:</b> {member_since}\n"
+        f"{quota_text}\n"
+        f"💡 Use /subscription for full plan details"
+    )
+
+    await message.reply(stats_text, parse_mode="HTML")
+    await log_user_action(user_id, "stats_command", True)
+
+
+@router.message(Command("support"))
+async def support_command(message: types.Message, **kwargs):
+    """Send support contact information"""
+    support_text = (
+        "🛟 <b>TonGPT Support</b>\n\n"
+        "Need help? Reach us through any of these channels:\n\n"
+        "💬 <b>Telegram:</b> @TonGPT_Support\n"
+        "📧 <b>Email:</b> support@tongpt.io\n\n"
+        "🕐 <b>Response Time:</b> Usually within 24 hours\n"
+        "📋 <b>When contacting us, include:</b>\n"
+        f"• Your User ID: <code>{message.from_user.id}</code>\n"
+        "• A description of the issue\n"
+        "• Any error messages you received\n\n"
+        "💎 Premium users get priority support!"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 Contact Support", url="https://t.me/TonGPT_Support")]
+    ])
+
+    await message.reply(support_text, parse_mode="HTML", reply_markup=keyboard)
+
+
+@router.message(Command("join"))
+async def join_command(message: types.Message, **kwargs):
+    """Send community links"""
+    join_text = (
+        "🌐 <b>Join the TonGPT Community</b>\n\n"
+        "Connect with fellow TON memecoin enthusiasts:\n\n"
+        "📢 <b>Announcements:</b> @TonGPT_News\n"
+        "💬 <b>Discussion Group:</b> @TonGPT_Community\n"
+        "🐦 <b>Twitter/X:</b> @TonGPT_io\n\n"
+        "🎁 <b>Community Benefits:</b>\n"
+        "• Early access to new features\n"
+        "• Exclusive alpha signals\n"
+        "• Direct feedback to the dev team\n"
+        "• Community-driven token analysis\n\n"
+        "🚀 Join now and stay ahead of the market!"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📢 Channel", url="https://t.me/TonGPT_News"),
+            InlineKeyboardButton(text="💬 Group", url="https://t.me/TonGPT_Community"),
+        ]
+    ])
+
+    await message.reply(join_text, parse_mode="HTML", reply_markup=keyboard)
+
+
+@router.message(Command("alert"))
+async def alert_command(message: types.Message, **kwargs):
+    """Price alert entry point — delegates to handlers/alerts.py if wired, else stub"""
+    # handlers/alerts.py has a full FSM-based alert flow registered via
+    # register_alerts_handlers(dp) which listens on /alerts (plural).
+    # This /alert (singular) command provides a friendly redirect.
+    alert_text = (
+        "🔔 <b>Price Alerts</b>\n\n"
+        "Set custom price alerts for any TON token!\n\n"
+        "📌 <b>How to use:</b>\n"
+        "• /alerts — Start the alert setup wizard\n"
+        "  (enter a token symbol, then a target price)\n\n"
+        "⚙️ <b>Features:</b>\n"
+        "• Supports any TON jetton\n"
+        "• Alerts stored in Redis for fast checks\n"
+        "• Notifications via bot message\n\n"
+        "💎 Premium users get unlimited alerts!"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔔 Set an Alert", callback_data="start_alert_setup")],
+        [InlineKeyboardButton(text="💎 Upgrade for More", callback_data="pay_ton")]
+    ])
+
+    await message.reply(alert_text, parse_mode="HTML", reply_markup=keyboard)
+
 
 # ==================== CHAT HANDLER ====================
 

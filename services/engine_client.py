@@ -1,4 +1,5 @@
 import aiohttp
+import asyncio
 import logging
 import os
 import json
@@ -20,7 +21,7 @@ class EngineClient:
     Client for interactions with the C# TonGPT.Engine API.
     Acts as the single source of truth for data persistence, replacing local databases.
     """
-    
+
     def __init__(self, base_url: str = None):
         if base_url:
             self.base_url = base_url.rstrip('/')
@@ -63,7 +64,7 @@ class EngineClient:
                 async with session.post(f"{self.base_url}/{endpoint}", json=data, headers=self._headers()) as response:
                     if response.status in [200, 201]:
                         return await response.json()
-                    
+
                     error_text = await response.text()
                     logger.warning(f"Engine API POST {endpoint} failed: {response.status} - {error_text}")
                     return {"error": response.status, "message": error_text}
@@ -85,7 +86,7 @@ class EngineClient:
     # User Management
     # ==========================================
 
-    async def create_or_update_user(self, telegram_id: int, username: str = None, 
+    async def create_or_update_user(self, telegram_id: int, username: str = None,
                                    first_name: str = None, last_name: str = None) -> bool:
         """Create or update user in the backend"""
         data = {
@@ -168,12 +169,17 @@ class EngineClient:
         plan = (result.get("Plan") or result.get("plan") or "Free")
         return {
             "tier": plan,
+            "plan": plan,
             "credits": 0,
             "expiry": result.get("Expiry") or result.get("expiry"),
         }
 
     async def record_payment(self, telegram_id: str, plan: str, provider: str, external_id: str = None) -> Optional[str]:
-        """Record a completed payment. Returns payment_id (guid string) for use in upgrade_user."""
+        """Record a completed payment. Returns payment_id (guid string) for use in upgrade_user.
+
+        NOTE: For new code prefer :meth:`complete_payment`, which records the
+        payment AND activates the subscription atomically in one transaction.
+        """
         data = {
             "telegramId": str(telegram_id),
             "plan": plan,
@@ -187,13 +193,111 @@ class EngineClient:
         return str(pid) if pid else None
 
     async def upgrade_user(self, telegram_id: str, plan: str, payment_record_id: str = None) -> bool:
-        """Upgrade user plan. Requires payment_record_id from record_payment (payment verification)."""
+        """Upgrade user plan. Requires payment_record_id from record_payment (payment verification).
+
+        NOTE: For new code prefer :meth:`complete_payment`, which records the
+        payment AND activates the subscription atomically in one transaction.
+        """
         payload = {
             "telegramId": str(telegram_id),
             "plan": plan,
         }
         if payment_record_id:
             payload["paymentRecordId"] = payment_record_id
+        result = await self._post("Subscription/upgrade", payload)
+        return result.get("status") == "Success"
+
+    async def complete_payment(
+        self,
+        telegram_id: Any,
+        plan: str,
+        provider: str,
+        external_id: str,
+        duration_days: int = 30,
+        amount_ton: float = 0.0,
+        max_attempts: int = 3,
+    ) -> Dict[str, Any]:
+        """Atomically record a payment AND activate the subscription (Postgres SoT).
+
+        This is the canonical, reliable activation path. The C# endpoint uses the
+        unique index on (ExternalId, Provider) as the single idempotency
+        authority, so calling this repeatedly with the same external_id is
+        ALWAYS safe -- duplicates return already_processed=True without
+        double-activating. That property is what lets the background
+        reconciliation queue retry freely.
+
+        Returns a normalized dict:
+            ok                 -- True if Postgres confirmed activation
+            already_processed  -- True if this was a duplicate
+            status             -- "Activated" / "AlreadyProcessed"
+            payment_id, plan, expiry
+            permanent          -- True => do NOT retry/queue (4xx)
+            error              -- present when ok is False
+        Never raises.
+        """
+        data = {
+            "telegramId": str(telegram_id),
+            "plan": plan,
+            "provider": provider,
+            "externalId": external_id or "",
+            "durationDays": int(duration_days),
+            "amountTon": float(amount_ton),
+        }
+        last_error: Any = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                result = await self._post("Payment/complete", data)
+            except Exception as e:  # _post shouldn't raise, but be defensive
+                last_error = str(e)
+                result = {"error": "exception", "message": str(e)}
+
+            if "error" not in result:
+                return {
+                    "ok": True,
+                    "already_processed": bool(result.get("alreadyProcessed")),
+                    "status": result.get("status"),
+                    "payment_id": str(result.get("paymentId")) if result.get("paymentId") else None,
+                    "plan": result.get("plan"),
+                    "expiry": result.get("expiry"),
+                    "permanent": False,
+                }
+
+            last_error = result.get("error")
+            # 4xx client errors (e.g. invalid plan) are permanent -- don't retry.
+            if isinstance(last_error, int) and 400 <= last_error < 500:
+                logger.error(
+                    "complete_payment permanent failure user=%s plan=%s: %s",
+                    telegram_id, plan, result.get("message"),
+                )
+                return {
+                    "ok": False, "permanent": True,
+                    "error": last_error, "message": result.get("message"),
+                }
+
+            if attempt < max_attempts:
+                await asyncio.sleep(min(8.0, 0.5 * (2 ** attempt)))
+
+        logger.warning(
+            "complete_payment transient failure user=%s plan=%s after %s attempts: %s",
+            telegram_id, plan, max_attempts, last_error,
+        )
+        return {"ok": False, "permanent": False, "error": last_error or "unreachable"}
+
+    async def activate_subscription(
+        self, payment_id: str, user_id: Any, plan: str, duration_days: int = 30
+    ) -> bool:
+        """Activate a subscription for an ALREADY-recorded payment (by paymentId).
+
+        Idempotent on the C# side (guarded by an activity-log marker), so it is
+        safe to retry. Prefer :meth:`complete_payment` for the live payment flow;
+        this exists for the two-step record->activate path and admin tooling.
+        """
+        payload = {
+            "telegramId": str(user_id),
+            "plan": plan,
+            "paymentRecordId": payment_id,
+            "durationDays": int(duration_days),
+        }
         result = await self._post("Subscription/upgrade", payload)
         return result.get("status") == "Success"
 

@@ -1,98 +1,22 @@
-import time
-import asyncio
-from typing import Dict, Tuple, Any, Optional
-import logging
+"""
+utils/rate_limiter.py — COMPATIBILITY SHIM
+==========================================
 
-logger = logging.getLogger(__name__)
+The real implementation now lives in ``core/rate_limiter.py``. This module is
+kept so existing imports keep working:
 
-class RateLimiter:
-    def __init__(self, redis_client: Optional[object] = None):
-        """Initialize rate limiter with optional Redis client"""
-        if redis_client is None:
-            logger.warning("RateLimiter initialized without Redis - using in-memory fallback")
-            self._memory_cache: Dict[str, Dict[int, int]] = {}
-            self._use_memory = True
-        else:
-            self._use_memory = False
-        self.redis_client = redis_client
-        self.default_limits = {
-            "free": {"requests_per_hour": 10, "burst": 3},
-            "basic": {"requests_per_hour": 100, "burst": 20},
-            "premium": {"requests_per_hour": 1000, "burst": 50}
-        }
-    
-    async def check_rate_limit(self, user_id: int, tier: str = "free") -> Tuple[bool, Dict[str, Any]]:
-        """Check if user is rate limited"""
-        now = time.time()
-        window_start = int(now // 3600) * 3600  # Hour window
-        
-        limits = self.default_limits.get(tier, self.default_limits["free"])
-        key = f"rate_limit:{user_id}:{window_start}"
-        
-        try:
-            if self._use_memory:
-                return self._check_rate_limit_memory(user_id, window_start, limits, key)
-            else:
-                return await self._check_rate_limit_redis(user_id, window_start, limits, key)
-        except Exception as e:
-            logger.error(f"Rate limit check failed: {e}", exc_info=True)
-            # Fail-closed: deny request on rate-limiter error
-            return True, {"error": "Rate limiter unavailable — request denied"}
-    
-    def _check_rate_limit_memory(self, user_id: int, window_start: int, limits: Dict, key: str) -> Tuple[bool, Dict[str, Any]]:
-        """Check rate limit using in-memory cache"""
-        limit = limits["requests_per_hour"]
-        
-        if window_start not in self._memory_cache:
-            self._memory_cache[window_start] = {}
-        
-        current_requests = self._memory_cache[window_start].get(user_id, 0)
-        
-        if current_requests >= limit:
-            return True, {
-                "error": "Rate limit exceeded",
-                "limit": limit,
-                "current": current_requests,
-                "reset_time": window_start + 3600,
-                "tier": limits.get("tier", "free")
-            }
-        
-        # Increment counter
-        self._memory_cache[window_start][user_id] = current_requests + 1
-        
-        return False, {
-            "requests_made": current_requests + 1,
-            "limit": limit,
-            "remaining": limit - current_requests - 1,
-            "reset_time": window_start + 3600,
-            "tier": limits.get("tier", "free")
-        }
-    
-    async def _check_rate_limit_redis(self, user_id: int, window_start: int, limits: Dict, key: str) -> Tuple[bool, Dict[str, Any]]:
-        """Check rate limit using Redis"""
-        limit = limits["requests_per_hour"]
-        
-        # Get current value (returns None if doesn't exist)
-        current_requests = self.redis_client.get(key)
-        current_requests = int(current_requests) if current_requests else 0
-        
-        if current_requests >= limit:
-            return True, {
-                "error": "Rate limit exceeded",
-                "limit": limit,
-                "current": current_requests,
-                "reset_time": window_start + 3600,
-                "tier": limits.get("tier", "free")
-            }
-        
-        # Increment counter
-        self.redis_client.incr(key)
-        self.redis_client.expire(key, 3600)
-        
-        return False, {
-            "requests_made": current_requests + 1,
-            "limit": limit,
-            "remaining": limit - current_requests - 1,
-            "reset_time": window_start + 3600,
-            "tier": limits.get("tier", "free")
-        }
+    from utils.rate_limiter import RateLimiter
+
+The canonical ``RateLimiter`` is a drop-in superset of the old one:
+``RateLimiter(redis_client)`` and ``await rl.check_rate_limit(user_id, tier)``
+behave the same (the latter still returns ``(is_limited, info)``), but tiers,
+windows, fail-safe fallback and observability are all dramatically improved.
+
+Do NOT add new logic here — extend ``core/rate_limiter.py`` instead.
+"""
+
+from __future__ import annotations
+
+from core.rate_limiter import RateLimiter, get_rate_limiter, init_rate_limiter  # noqa: F401
+
+__all__ = ["RateLimiter", "get_rate_limiter", "init_rate_limiter"]

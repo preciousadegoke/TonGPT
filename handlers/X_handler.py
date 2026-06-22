@@ -1,7 +1,5 @@
 from aiogram import Router, types
 from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from utils.redis_conn import redis_client
 from services.engine_client import engine_client
@@ -13,9 +11,7 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
-class XStates(StatesGroup):
-    WaitingForUsername = State()
-    WaitingForKeyword = State()
+
 
 # Create router
 router = Router()

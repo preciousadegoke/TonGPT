@@ -1,7 +1,5 @@
 import logging
-import asyncio
 from aiogram import types
-from typing import Optional
 from gpt.engine import get_engine
 
 logger = logging.getLogger(__name__)

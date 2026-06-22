@@ -295,11 +295,13 @@ def analyze_wallet_ai(wallet_address: str) -> Dict[str, Any]:
             "analyzed_at": datetime.now().isoformat()
         }
 
-def is_memecoin_only(token: Dict) -> bool:
+def is_memecoin_only(token) -> bool:
     """Strict memecoin filtering - excludes major cryptocurrencies (cached implicitly via token analysis)"""
     try:
-        name = token.get('name', '').lower()
-        symbol = token.get('symbol', '').lower()
+        name = getattr(token, 'name', '') or ''
+        symbol = getattr(token, 'symbol', '') or ''
+        name = name.lower()
+        symbol = symbol.lower()
         
         # EXCLUDE major cryptocurrencies first
         major_cryptos = [

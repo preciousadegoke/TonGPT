@@ -1,19 +1,32 @@
 # handlers/whale.py
+import asyncio
+from datetime import datetime
+from typing import Dict, List, Optional
+
+import structlog
 from aiogram import Router, types
 from aiogram.filters import Command
 from services.tonapi import get_large_transactions, get_whale_summary
 from utils.redis_conn import redis_client
 from services.engine_client import engine_client
-import logging
-from datetime import datetime
-from typing import Dict, List, Optional
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 router = Router()
 
 
+def _safe_redis(method: str, *args, **kwargs):
+    """Execute a Redis command with None-guard and exception swallowing."""
+    if not redis_client:
+        return None
+    try:
+        return getattr(redis_client, method)(*args, **kwargs)
+    except Exception as e:
+        logger.warning("redis_op_failed", method=method, err=f"{type(e).__name__}: {e}")
+        return None
+
+
 async def get_user_premium_status(redis_client, engine_client, user_id: int) -> bool:
-    cached = redis_client.get(f"premium:{user_id}")
+    cached = _safe_redis("get", f"premium:{user_id}")
     if cached is not None:
         return cached == "1" or cached == b"1"
     try:
@@ -22,9 +35,7 @@ async def get_user_premium_status(redis_client, engine_client, user_id: int) -> 
         is_premium = plan not in ("", "free")
     except Exception:
         return False  # Fail closed — deny premium on Engine failure
-    redis_client.set(
-        f"premium:{user_id}", "1" if is_premium else "0", ex=300
-    )
+    _safe_redis("set", f"premium:{user_id}", "1" if is_premium else "0", ex=300)
     return is_premium
 
 # Whale configuration
@@ -68,8 +79,8 @@ async def whale_alerts(message: types.Message):
         display_limit = get_display_limit_for_plan(user_plan)
         min_amount = get_whale_threshold_for_plan(user_plan)
         
-        # Get large transactions
-        transactions = await get_large_transactions(limit=20, min_amount=min_amount)
+        # Now fully async/non-blocking (services/ton_api_service.py).
+        transactions = await get_large_transactions(20, min_amount)
         
         if not transactions:
             no_data_msg = format_no_whale_data_message(user_plan, min_amount, has_premium)
@@ -77,7 +88,7 @@ async def whale_alerts(message: types.Message):
             return
         
         # Format whale alerts response
-        response_msg = await format_whale_alerts_response(
+        response_msg = format_whale_alerts_response(
             transactions[:display_limit], 
             user_plan, 
             has_premium, 
@@ -91,12 +102,19 @@ async def whale_alerts(message: types.Message):
         
         # Track usage for premium users
         if has_premium:
-            redis_client.incr(f"whale_usage:{user_id}")
-            logger.info(f"Whale alerts accessed by premium user {user_id} ({user_plan})")
+            _safe_redis("incr", f"whale_usage:{user_id}")
+            logger.info("whale_alerts_accessed", user_id=user_id, plan=user_plan)
         
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Whale alert error for user {user_id}: {error_msg}")
+        logger.error("whale_alert_error", user_id=user_id, err=error_msg)
+
+        # Report to error channel (never raises)
+        try:
+            from services.error_reporter import error_reporter
+            await error_reporter.report(e, context="whale_alerts", user_id=user_id)
+        except Exception:
+            pass
         
         await message.reply(
             f"⚠️ <b>Whale Alert System Unavailable</b>\n\n"
@@ -142,13 +160,13 @@ async def whale_summary(message: types.Message):
     await message.bot.send_chat_action(message.chat.id, "typing")
     
     try:
-        # Get summary data for different time periods
-        summary_24h = await get_whale_summary(hours=24)
+        # P0-FIX: wrap blocking sync call in to_thread
+        summary_24h = await get_whale_summary(24)
         summary_7d = None
         
         # Pro+ and Elite get 7-day data
         if user_plan in ['pro_plus', 'elite']:
-            summary_7d = await get_whale_summary(hours=168)  # 7 days
+            summary_7d = await get_whale_summary(168)  # 7 days
         
         if not summary_24h or summary_24h.get('total_transactions', 0) == 0:
             await message.reply(
@@ -166,7 +184,7 @@ async def whale_summary(message: types.Message):
             return
         
         # Format comprehensive summary
-        response_msg = await format_whale_summary_response(
+        response_msg = format_whale_summary_response(
             summary_24h, 
             summary_7d, 
             user_plan
@@ -178,12 +196,18 @@ async def whale_summary(message: types.Message):
         await message.reply(response_msg, parse_mode="HTML", reply_markup=keyboard)
         
         # Track usage
-        redis_client.incr(f"whale_summary_usage:{user_id}")
-        logger.info(f"Whale summary accessed by premium user {user_id} ({user_plan})")
+        _safe_redis("incr", f"whale_summary_usage:{user_id}")
+        logger.info("whale_summary_accessed", user_id=user_id, plan=user_plan)
         
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Whale summary error for user {user_id}: {error_msg}")
+        logger.error("whale_summary_error", user_id=user_id, err=error_msg)
+        
+        try:
+            from services.error_reporter import error_reporter
+            await error_reporter.report(e, context="whale_summary", user_id=user_id)
+        except Exception:
+            pass
         
         await message.reply(
             f"⚠️ <b>Whale Summary Unavailable</b>\n\n"
@@ -219,13 +243,14 @@ async def whale_config(message: types.Message):
     user_plan = (status.get("plan") or "Free").lower()
     current_threshold = get_whale_threshold_for_plan(user_plan)
     
+    notif_status = _safe_redis("get", f"whale_notifications:{user_id}")
     config_msg = (
         f"⚙️ <b>WHALE ALERT CONFIGURATION</b> - {user_plan.title()}\n\n"
         f"🎯 <b>Current Settings:</b>\n"
         f"• Minimum Alert: <b>{current_threshold:,.0f} TON</b>\n"
         f"• Display Limit: <b>{get_display_limit_for_plan(user_plan)} transactions</b>\n"
         f"• Auto-refresh: <b>Enabled</b>\n"
-        f"• Notifications: <b>{'Enabled' if redis_client.get(f'whale_notifications:{user_id}') else 'Disabled'}</b>\n\n"
+        f"• Notifications: <b>{'Enabled' if notif_status else 'Disabled'}</b>\n\n"
         f"🎚️ <b>Available Thresholds:</b>\n"
         f"• 🟡 Small Whale: {WHALE_THRESHOLDS['small_whale']:,}+ TON\n"
         f"• 🟠 Medium Whale: {WHALE_THRESHOLDS['medium_whale']:,}+ TON\n"
@@ -263,24 +288,25 @@ async def whale_refresh_callback(callback_query: types.CallbackQuery):
         display_limit = get_display_limit_for_plan(user_plan)
         min_amount = get_whale_threshold_for_plan(user_plan)
 
-        transactions = await get_large_transactions(limit=20, min_amount=min_amount)
+        # Now fully async/non-blocking (services/ton_api_service.py).
+        transactions = await get_large_transactions(20, min_amount)
 
         if not transactions:
             no_data_msg = format_no_whale_data_message(user_plan, min_amount, has_premium)
             await callback_query.message.edit_text(no_data_msg, parse_mode="HTML")
             return
 
-        response_msg = await format_whale_alerts_response(
+        response_msg = format_whale_alerts_response(
             transactions[:display_limit], user_plan, has_premium, display_limit
         )
         keyboard = create_whale_action_keyboard(has_premium, user_plan)
         await callback_query.message.edit_text(response_msg, parse_mode="HTML", reply_markup=keyboard)
 
         if has_premium:
-            redis_client.incr(f"whale_usage:{user_id}")
+            _safe_redis("incr", f"whale_usage:{user_id}")
 
     except Exception as e:
-        logger.error(f"Whale refresh callback error: {e}")
+        logger.error("whale_refresh_callback_error", err=str(e))
         await callback_query.message.edit_text(
             "⚠️ <b>Could not refresh whale data.</b>\nPlease try /whale again.",
             parse_mode="HTML",
@@ -303,10 +329,11 @@ async def whale_summary_callback(callback_query: types.CallbackQuery):
         status = await engine_client.get_user_status(str(user_id))
         user_plan = (status.get("plan") or "Free").lower()
 
-        summary_24h = await get_whale_summary(hours=24)
+        # P0-FIX: wrap blocking sync call in to_thread
+        summary_24h = await get_whale_summary(24)
         summary_7d = None
         if user_plan in ['pro_plus', 'elite']:
-            summary_7d = await get_whale_summary(hours=168)
+            summary_7d = await get_whale_summary(168)
 
         if not summary_24h or summary_24h.get('total_transactions', 0) == 0:
             await callback_query.message.edit_text(
@@ -316,14 +343,14 @@ async def whale_summary_callback(callback_query: types.CallbackQuery):
             )
             return
 
-        response_msg = await format_whale_summary_response(summary_24h, summary_7d, user_plan)
+        response_msg = format_whale_summary_response(summary_24h, summary_7d, user_plan)
         keyboard = create_summary_action_keyboard(user_plan)
         await callback_query.message.edit_text(response_msg, parse_mode="HTML", reply_markup=keyboard)
 
-        redis_client.incr(f"whale_summary_usage:{user_id}")
+        _safe_redis("incr", f"whale_summary_usage:{user_id}")
 
     except Exception as e:
-        logger.error(f"Whale summary callback error: {e}")
+        logger.error("whale_summary_callback_error", err=str(e))
         await callback_query.message.edit_text(
             "⚠️ <b>Could not load whale summary.</b>\nPlease try /whale_summary again.",
             parse_mode="HTML",
@@ -343,10 +370,11 @@ async def whale_settings_callback(callback_query: types.CallbackQuery):
     current_plan = (status.get("plan") or "Free").lower()
     current_threshold = get_whale_threshold_for_plan(current_plan)
     
+    notif_status = _safe_redis("get", f"whale_notifications:{user_id}")
     settings_msg = (
         f"⚙️ <b>Whale Alert Settings</b>\n\n"
         f"🎯 <b>Current Threshold:</b> {current_threshold:,.0f} TON\n"
-        f"🔔 <b>Notifications:</b> {'Enabled' if redis_client.get(f'whale_notifications:{user_id}') else 'Disabled'}\n"
+        f"🔔 <b>Notifications:</b> {'Enabled' if notif_status else 'Disabled'}\n"
         f"📱 <b>Auto-refresh:</b> Every 5 minutes\n"
         f"📊 <b>Display Limit:</b> {get_display_limit_for_plan(current_plan)} transactions\n\n"
         f"💡 Settings are based on your premium plan level"
@@ -368,13 +396,13 @@ async def toggle_notifications_callback(callback_query: types.CallbackQuery):
     """Toggle whale notifications"""
     user_id = callback_query.from_user.id
     
-    current_status = redis_client.get(f"whale_notifications:{user_id}")
+    current_status = _safe_redis("get", f"whale_notifications:{user_id}")
     
     if current_status:
-        redis_client.delete(f"whale_notifications:{user_id}")
+        _safe_redis("delete", f"whale_notifications:{user_id}")
         await callback_query.answer("🔕 Whale notifications disabled", show_alert=True)
     else:
-        redis_client.set(f"whale_notifications:{user_id}", "enabled")
+        _safe_redis("set", f"whale_notifications:{user_id}", "enabled")
         await callback_query.answer("🔔 Whale notifications enabled", show_alert=True)
     
     # Refresh the settings display
@@ -430,7 +458,7 @@ def format_no_whale_data_message(user_plan: str, min_amount: float, has_premium:
     
     return base_msg
 
-async def format_whale_alerts_response(transactions: List[Dict], user_plan: str, has_premium: bool, display_limit: int) -> str:
+def format_whale_alerts_response(transactions: List[Dict], user_plan: str, has_premium: bool, display_limit: int) -> str:
     """Format whale alerts response message"""
     msg = f"🐋 <b>WHALE MOVEMENTS DETECTED</b> - {user_plan.title()}\n\n"
     
@@ -483,7 +511,7 @@ async def format_whale_alerts_response(transactions: List[Dict], user_plan: str,
     
     return msg
 
-async def format_whale_summary_response(summary_24h: Dict, summary_7d: Optional[Dict], user_plan: str) -> str:
+def format_whale_summary_response(summary_24h: Dict, summary_7d: Optional[Dict], user_plan: str) -> str:
     """Format whale summary response message"""
     msg = f"📊 <b>WHALE ACTIVITY ANALYTICS</b> - {user_plan.title()}\n\n"
     
@@ -606,7 +634,7 @@ def format_timestamp(timestamp: int) -> str:
             return f"{hours}h ago"
         else:
             return dt.strftime("%m/%d %H:%M")
-    except:
+    except Exception:
         return "Unknown"
 
 def get_market_impact_analysis(summary: Dict) -> str:

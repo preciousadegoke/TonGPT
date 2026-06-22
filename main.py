@@ -1,6 +1,7 @@
 """
 main.py — TonGPT Bot Entry Point
 Remediated: FIX-1 through FIX-13 applied.
+Refined: P0-review — structlog pipeline, ErrorReporter init, LOG_LEVEL env, catch-all.
 Requires Python 3.11+ for asyncio.timeout support.
 """
 
@@ -14,6 +15,8 @@ import random
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, Any
+
+import structlog
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
@@ -68,7 +71,7 @@ if len(_referral_secret) < 32:
 
 # FIX-12: Add CORS Wildcard Production Guard
 _cors_origins = os.environ.get("CORS_ALLOWED_ORIGINS", "")
-_env = os.environ.get("ENV", "production").lower()
+_env = os.environ.get("ENVIRONMENT", "production").lower()
 if "*" in _cors_origins and _env != "development":
     raise ValueError(
         "CORS_ALLOWED_ORIGINS cannot be '*' in production. "
@@ -99,7 +102,58 @@ config = load_config()
 
 # Setup logging with PII redaction and rotation
 configure_logging("bot.log")
-logger = logging.getLogger(__name__)
+
+# ── Structlog Configuration ────────────────────────────────────────────────
+# Wraps stdlib logging so existing log calls (logging.getLogger) keep working.
+# New code should use: log = structlog.get_logger(); log.info("event", key=val)
+#
+# LOG_LEVEL env var (default: INFO) controls the root logger threshold.
+# Set LOG_LEVEL=DEBUG for verbose output during development.
+_LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+_resolved_level = getattr(logging, _LOG_LEVEL, None)
+if _resolved_level is None:
+    # Invalid LOG_LEVEL value — fall back to INFO and warn
+    _resolved_level = logging.INFO
+    print(f"[warn] Invalid LOG_LEVEL='{_LOG_LEVEL}', falling back to INFO")
+
+logging.getLogger().setLevel(_resolved_level)
+
+# Choose renderers: JSON in production for log aggregators, console in dev
+_is_dev = os.environ.get("ENVIRONMENT", "production").lower() == "development"
+
+_shared_processors = [
+    structlog.contextvars.merge_contextvars,
+    structlog.stdlib.filter_by_level,
+    structlog.stdlib.add_logger_name,
+    structlog.stdlib.add_log_level,
+    structlog.stdlib.PositionalArgumentsFormatter(),
+    structlog.processors.TimeStamper(fmt="iso"),
+    structlog.processors.StackInfoRenderer(),
+    structlog.processors.format_exc_info,
+    structlog.processors.UnicodeDecoder(),
+]
+
+if _is_dev:
+    # Human-readable console output for development
+    _shared_processors.append(structlog.dev.ConsoleRenderer())
+else:
+    # Wrap for stdlib formatter (production — integrates with file handler)
+    _shared_processors.append(structlog.stdlib.ProcessorFormatter.wrap_for_formatter)
+
+structlog.configure(
+    processors=_shared_processors,
+    wrapper_class=structlog.stdlib.BoundLogger,
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    cache_logger_on_first_use=True,
+)
+logger = structlog.get_logger(__name__)
+
+# ── Initialize ErrorReporter singleton early ───────────────────────────────
+# The singleton is created at import time in services/error_reporter.py.
+# We import it here so it's ready; the Bot instance is wired later in
+# initialize_bot() via error_reporter.set_bot(bot).
+from services.error_reporter import error_reporter
 
 # FIX-13: Audit Log Calls; Redact Sensitive Config Keys
 _REDACT_KEYS = {
@@ -220,7 +274,18 @@ async def on_startup():
     handlers are always available, regardless of service init outcome.
     """
     logger.info("🚀 TonGPT service initialization starting...")
-    
+
+    # Initialize the shared async HTTP client for TON data fetching. This makes
+    # all TONAPI calls non-blocking (replaces the old sync requests + time.sleep
+    # that froze the event loop). Lazily created on first use too, so this is a
+    # best-effort warm-up.
+    try:
+        from services.ton_api_service import startup_ton_service
+        await startup_ton_service()
+        logger.info("🌐 TON API async client initialized")
+    except Exception as e:
+        logger.warning(f"⚠️ TON API client init failed: {type(e).__name__}: {e}")
+
     # FIX-7: Use asyncio.create_task for the miniapp server
     try:
         logger.info("🌐 Starting Mini-App server task...")
@@ -264,12 +329,14 @@ async def on_startup():
     ctx.gpt_handler = services.get('gpt_handler')
     ctx.x_monitor = services.get('X_monitor')
     
-    # Initialize AdvancedRateLimiter
+    # Rate limiter is created in main() before handler registration. This is an
+    # idempotent safety-net in case startup ordering ever changes — it returns
+    # the existing singleton if one was already created.
     try:
-        from core.rate_limiting import get_rate_limiter
-        get_rate_limiter(redis_client)
+        from core.rate_limiter import init_rate_limiter
+        init_rate_limiter(redis_client)
     except Exception as e:
-        logger.warning(f"⚠️ Rate limiter (advanced) not initialized: {type(e).__name__}: {e}")
+        logger.warning(f"⚠️ Rate limiter safety-net init failed: {type(e).__name__}: {e}")
     
     # Start monitoring loop (Prometheus/metrics collection)
     try:
@@ -279,31 +346,10 @@ async def on_startup():
     except Exception as e:
         logger.warning(f"⚠️ Monitoring loop not started: {type(e).__name__}: {e}")
     
-    # Start wallet monitoring background task
-    try:
-        from services.monitor import monitor_followed_wallets
-        asyncio.create_task(
-            monitor_followed_wallets(),
-            name="wallet_monitor"
-        )
-        logger.info("👛 Wallet monitoring task started")
-    except Exception as e:
-        logger.warning(f"⚠️ Wallet monitor not started: {type(e).__name__}: {e}")
+    # NOTE: Wallet monitor and X monitor tasks are started in
+    # core/initialization.py → start_background_tasks(). Do NOT duplicate here.
     
-    # Start X/Twitter monitoring background task
-    try:
-        if ctx.x_monitor:
-            asyncio.create_task(
-                ctx.x_monitor.enhanced_monitoring_cycle(),
-                name="x_monitor"
-            )
-            logger.info("🐦 X monitoring task started")
-        else:
-            logger.info("ℹ️ X monitor not available — skipping")
-    except Exception as e:
-        logger.warning(f"⚠️ X monitor not started: {type(e).__name__}: {e}")
-    
-    # Start price alert polling loop
+    # Start price alert polling loop (only started here, not in start_background_tasks)
     try:
         asyncio.create_task(
             price_alert_polling_loop(),
@@ -312,6 +358,26 @@ async def on_startup():
         logger.info("💰 Price alert polling task started")
     except Exception as e:
         logger.warning(f"⚠️ Price alert poller not started: {type(e).__name__}: {e}")
+
+    # Start payment-activation reconciliation loop. Drains the durable on-disk
+    # queue of any activations that couldn't complete synchronously (e.g. Engine
+    # was briefly down), so a paid user never permanently loses their upgrade.
+    try:
+        from services.activation_queue import reconciliation_loop
+        asyncio.create_task(reconciliation_loop(), name="activation_reconciler")
+        logger.info("💳 Payment activation reconciliation loop started")
+    except Exception as e:
+        logger.warning(f"⚠️ Activation reconciler not started: {type(e).__name__}: {e}")
+
+    # Start TON on-chain payment monitor. Self-disables (logs and returns) when
+    # TON_PAYMENTS_ENABLED is false or MONITORED_WALLET_ADDRESS is unset, so this
+    # is safe to always create.
+    try:
+        from services.ton_payments import monitor_loop as ton_monitor_loop
+        asyncio.create_task(ton_monitor_loop(), name="ton_payment_monitor")
+        logger.info("🪙 TON payment monitor task created")
+    except Exception as e:
+        logger.warning(f"⚠️ TON payment monitor not started: {type(e).__name__}: {e}")
     
     # Set bot status in Redis (with fallback if Redis unavailable)
     # FIX-8: Replace naked Redis calls with safe_redis
@@ -328,6 +394,13 @@ async def on_shutdown():
     # FIX-8: Replace naked Redis calls with safe_redis
     safe_redis("set", "bot_status", "offline")
     safe_redis("set", "bot_shutdown_time", int(time.time()))
+
+    # Close the shared TON API HTTP client cleanly.
+    try:
+        from services.ton_api_service import shutdown_ton_service
+        await shutdown_ton_service()
+    except Exception as e:
+        logger.warning(f"⚠️ TON API client close failed: {type(e).__name__}: {e}")
     
     try:
         # FIX-3: Use ctx
@@ -341,9 +414,28 @@ async def on_shutdown():
 
 # FIX-2: Fix the error_handler Variable Reference Bug
 async def error_handler(event: ErrorEvent):
-    """Global error handler"""
-    logger.error(f"🚨 Unhandled exception: {event.exception}", exc_info=event.exception)
-    
+    """Global error handler — logs, notifies user, and reports to error channel."""
+    logger.error(
+        "unhandled_exception",
+        exc_type=type(event.exception).__qualname__,
+        exc_message=str(event.exception)[:300],
+        exc_info=event.exception,
+    )
+
+    # Report to Telegram error channel (async, rate-limited, never raises)
+    try:
+        user_id = None
+        update = event.update
+        if update and update.message and update.message.from_user:
+            user_id = update.message.from_user.id
+        await error_reporter.report(
+            event.exception,
+            context="global_error_handler",
+            user_id=user_id,
+        )
+    except Exception as report_err:
+        logger.warning("error_reporter_failed", err=str(report_err))
+
     try:
         # Extract the update object from the ErrorEvent
         update = event.update
@@ -360,7 +452,7 @@ async def error_handler(event: ErrorEvent):
             )
     # FIX-1: Replace bare except pass
     except Exception as e:
-        logger.warning(f"Could not send error reply to user: {type(e).__name__}: {e}")
+        logger.warning("error_reply_failed", err=f"{type(e).__name__}: {e}")
     
     return True
 
@@ -383,6 +475,9 @@ async def initialize_bot():
     # H-5: Register bot in shared singleton so services don't have to import from main
     from core.bot_instance import set_bot
     set_bot(ctx.bot)
+
+    # Wire ErrorReporter with the live Bot instance
+    error_reporter.set_bot(ctx.bot)
     
     # Initialize dispatcher
     ctx.dp = Dispatcher(storage=MemoryStorage())
@@ -402,11 +497,15 @@ async def initialize_bot():
 
 # FIX-6: Enforce a Consistent Handler Registration Contract
 async def register_all_handlers(ctx: AppContext):
-    """Register all bot handlers"""
+    """Register all bot handlers.
+
+    IMPORTANT: gpt_reply MUST remain last in HANDLER_MODULES because it
+    contains the catch-all @router.message() handler that matches any
+    unmatched message.  Moving it earlier would swallow legitimate messages.
+    """
     logger.info("📦 Registering handler modules...")
 
     HANDLER_MODULES = [
-       "gpt_reply",
        "subscription_handler",
        "pay",
        "X_handler",
@@ -417,7 +516,26 @@ async def register_all_handlers(ctx: AppContext):
        "early_detection",
        "influencer_handler",
        "referral",
+       "follow",
+       "ton_payment_handler",
+       # ↓ MUST BE LAST — contains catch-all handler for unrecognized commands
+       "gpt_reply",
     ]
+    
+    # Register core commands FIRST so /start, /help etc. are matched before catch-all handlers
+    try:
+        from bot.commands import register_commands
+        
+        # Check if register_commands is async
+        import inspect
+        if inspect.iscoroutinefunction(register_commands):
+            await register_commands(ctx.dp, config=config, redis_client=redis_client)
+        else:
+            register_commands(ctx.dp, config=config, redis_client=redis_client)
+        
+        logger.info("✅ Registered core commands")
+    except Exception as e:
+        logger.error(f"❌ Failed to register core commands: {type(e).__name__}: {e}")
     
     registered, failed = [], []
 
@@ -458,21 +576,6 @@ async def register_all_handlers(ctx: AppContext):
     logger.info(f"✅ Registered {len(registered)}/{len(HANDLER_MODULES)} handlers")
     if failed:
         logger.warning(f"⚠️ Failed handlers: {', '.join(failed)}")
-    
-    # Register core commands separately with bot instance (adapted to the new pattern if applicable)
-    try:
-        from bot.commands import register_commands
-        
-        # Check if register_commands is async
-        import inspect
-        if inspect.iscoroutinefunction(register_commands):
-            await register_commands(ctx.dp, config=config, redis_client=redis_client)
-        else:
-            register_commands(ctx.dp, config=config, redis_client=redis_client)
-        
-        logger.info("✅ Registered core commands")
-    except Exception as e:
-        logger.error(f"❌ Failed to register core commands: {type(e).__name__}: {e}")
 
 async def main():
     """Main application entry point"""
@@ -484,7 +587,20 @@ async def main():
         
         # Initialize bot and dispatcher
         await initialize_bot()
-        
+
+        # ── Initialize the rate limiter BEFORE registering handlers ──────
+        # CRITICAL (P0): the GPT handler's rate-limit decorator resolves the
+        # limiter at call time, but we still create the singleton here — before
+        # register_all_handlers — so it exists for the very first message and
+        # for any code that reads it during registration. Initialization order
+        # can no longer silently disable rate limiting.
+        try:
+            from core.rate_limiter import init_rate_limiter
+            init_rate_limiter(redis_client)
+            logger.info("🛡️ Rate limiter initialized (pre-handler-registration)")
+        except Exception as e:
+            logger.error(f"❌ Rate limiter init failed: {type(e).__name__}: {e}", exc_info=True)
+
         # ── Register ALL handlers BEFORE polling starts ──────────────────
         # This guarantees handlers are always available, regardless of
         # whether on_startup's service initialization succeeds or fails.

@@ -69,22 +69,46 @@ namespace TonGPT.Engine.Controllers
 
             if (Enum.TryParse<SubscriptionPlan>(request.Plan, true, out var plan))
             {
-                user.Plan = plan;
-                user.SubscriptionExpiry = DateTime.UtcNow.AddDays(30);
-                await _context.SaveChangesAsync();
+                var now = DateTime.UtcNow;
+                var paymentIdStr = payment.Id.ToString();
 
-                // Audit log
+                // IDEMPOTENCY: if this exact payment was already applied, return
+                // success WITHOUT extending the subscription again. Makes the
+                // endpoint safe to retry (e.g. background reconciliation).
+                var alreadyApplied = await _context.ActivityLogs.AnyAsync(a =>
+                    a.Action == "subscription_upgrade" &&
+                    a.Metadata != null &&
+                    a.Metadata.Contains(paymentIdStr));
+                if (alreadyApplied)
+                {
+                    _logger.LogInformation(
+                        "Upgrade idempotent: payment {PaymentId} already applied for user {TelegramId}.",
+                        payment.Id, request.TelegramId);
+                    return Ok(new { Status = "Success", NewPlan = user.Plan.ToString(), idempotent = true });
+                }
+
+                var durationDays = request.DurationDays > 0 ? request.DurationDays : 30;
+                // Extend from the later of (now, current expiry) to preserve unexpired time.
+                var basis = (user.SubscriptionExpiry.HasValue && user.SubscriptionExpiry.Value > now)
+                    ? user.SubscriptionExpiry.Value
+                    : now;
+                user.Plan = plan;
+                user.SubscriptionExpiry = basis.AddDays(durationDays);
+
                 _context.ActivityLogs.Add(new ActivityLog
                 {
                     TelegramId = request.TelegramId,
                     Action = "subscription_upgrade",
-                    Metadata = System.Text.Json.JsonSerializer.Serialize(new { Plan = request.Plan, PaymentId = payment.Id }),
+                    Metadata = System.Text.Json.JsonSerializer.Serialize(new { Plan = request.Plan, PaymentId = payment.Id, DurationDays = durationDays }),
                     Success = true,
-                    Timestamp = DateTime.UtcNow
+                    Timestamp = now
                 });
+
+                // Single SaveChanges => user upgrade + audit log commit atomically.
                 await _context.SaveChangesAsync();
 
-                _logger.LogInformation("User {TelegramId} upgraded to {Plan} (payment {PaymentId})", request.TelegramId, request.Plan, payment.Id);
+                _logger.LogInformation("User {TelegramId} upgraded to {Plan} until {Expiry} (payment {PaymentId})",
+                    request.TelegramId, request.Plan, user.SubscriptionExpiry, payment.Id);
                 return Ok(new { Status = "Success", NewPlan = plan.ToString() });
             }
 
@@ -98,5 +122,7 @@ namespace TonGPT.Engine.Controllers
         public required string Plan { get; set; }
         /// <summary>Required. Guid from POST api/Payment/record response (paymentId).</summary>
         public Guid? PaymentRecordId { get; set; }
+        /// <summary>Subscription length in days. Defaults to 30 when omitted.</summary>
+        public int DurationDays { get; set; } = 30;
     }
 }

@@ -1,201 +1,145 @@
-# TonGPT: Enterprise-Grade TON Blockchain Intelligence
+# TonGPT
 
-![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)
-![C# ASP.NET Core](https://img.shields.io/badge/C%23_.NET_Core-8.0-purple.svg)
-![aiogram 3.4.1](https://img.shields.io/badge/aiogram-3.4.1-green.svg)
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![Build: Passing](https://img.shields.io/badge/Build-Passing-brightgreen.svg)
+AI-powered intelligence for the TON ecosystem — live memecoin analytics, whale
+tracking, and on-chain insights, delivered through a **Telegram Bot** and a
+**Telegram Mini-App**, backed by a C# engine and native Tact smart contracts.
 
-**🏆 TON AI Agent Hackathon 2026 — Track: User-Facing Agents**
-
-TonGPT is a production-hardened AI intelligence agent built exclusively for the TON ecosystem, delivering live memecoin analytics, whale tracking, and on-chain insights via a dual Telegram Bot and Web Mini App interface. Designed for the Hackathon, it replaces generic LLM hallucination with hard data pipelines from TON API, DexScreener, and STON.fi. Rather than bolting AI onto a standard bot, TonGPT’s core is a context-aware OpenRouter GPT engine safeguarded by financial guardrails, backed by a C# infrastructure layer, and monetized via native Tact smart contracts.
+TonGPT replaces generic LLM guesswork with hard data pipelines (TON API,
+DexScreener, STON.fi, CoinGecko) wrapped in financial-safety guardrails.
 
 ---
 
-## 🚀 Deployment Status
+## Architecture at a glance
 
-TonGPT is currently in the final staging pipeline for the TON AI Agent Hackathon 2026. The bot, API engine, and mini-app are fully operational locally and are undergoing final Mainnet integration testing before public release.
-
----
-
-## ✨ Features
-
-| Feature | Description | Status |
-| :--- | :--- | :--- |
-| **Pure TON Memecoin Analytics** | AI-driven token scanning, volume sorting, and aggressive filtering to ignore major cryptos. | ✅ Live |
-| **Whale Monitoring** | Categorized whale analysis (Small to Mega) based on transaction volume via TON API. | ✅ Live |
-| **DeFi Data Integration** | Real-time fetch of top STON.fi pools and live TON/USD cross-checks via CoinGecko. | ✅ Live |
-| **Tact Subscription Contract** | Native TON payments for Starter (1 TON), Pro (5 TON), and Whale (20 TON) SaaS tiers. | ✅ Live |
-| **Contextual GPT Engine** | OpenRouter + OpenAI pipeline injected with live market context strictly verified by APIs. | ✅ Live |
-| **Financial Safety Guardrails** | AI middleware intercepts and flags deterministic financial advice ("100x", "guaranteed"). | ✅ Live |
-| **Telegram Mini App** | Embedded Web UI (FastAPI/Nginx) with TON Connect authorization bindings. | ✅ Live |
-| **GDPR Compliance Tools** | Fully operational `/export` and `/deletedata` flows for user data sovereignty. | ✅ Live |
-| *FAISS Semantic Memory* | *Planned vector embedding layer for historical market memory.* | 🔧 Beta / Stubs |
-
----
-
-## 🏗 Architecture
-
-TonGPT leverages a distributed microservice architecture, separating the conversational AI layer from the heavy infrastructure backend and the blockchain logic.
-
-```text
-┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
-│                 │       │                 │       │  OpenRouter /   │
-│  Telegram User  │◄─────►│   aiogram Bot   │◄─────►│  OpenAI API     │
-│  (Chat & Auth)  │       │  (Python 3.11+) │       │  (AI Engine)    │
-│                 │       │                 │       └─────────────────┘
-└─────────────────┘       └───────┬─────────┘                ▲
-         ▲                        │                          │ Context
-         │                   REST / API                      │
-┌────────┴────────┐       ┌───────▼─────────┐       ┌────────▼────────┐
-│                 │       │                 │       │  TON API /      │
-│  Web Mini App   │◄─────►│ C# .NET Engine  │◄─────►│  STON.fi /      │
-│(Vue/Vanilla UI) │       │ (PostgreSQL/DB) │       │  DexScreener    │
-│                 │       │                 │       └────────┬────────┘
-└─────────────────┘       └─────────────────┘                │
-         ▲                        ▲                          │
-         │                        │                          │
-         └────────────────────────┴──────────────────────────┘
-                        TON Blockchain (Tact Contracts)
+```
+            ┌──────────────┐        ┌──────────────────────┐
+ Telegram ──▶  aiogram bot  │        │  Telegram Mini-App    │
+            │   (main.py)   │        │  (Preact, miniapp-v2) │
+            └──────┬───────┘        └──────────┬───────────┘
+                   │                            │ HTTPS + initData
+                   ▼                            ▼
+            ┌─────────────────────────────────────────────┐
+            │      FastAPI mini-app server (api/)          │
+            │  initData HMAC · ton_proof · payments        │
+            └──────┬───────────────────────────┬──────────┘
+                   │                            │
+        ┌──────────▼─────────┐      ┌───────────▼───────────┐
+        │  Python services   │      │   C# Engine (external) │
+        │  TON/DEX/X/OpenAI  │      │   users, subscriptions │
+        └──────────┬─────────┘      └────────────────────────┘
+                   │
+        ┌──────────▼─────────┐   ┌──────────────┐
+        │  Redis (cache/RL)  │   │ Tact contract │  (contracts/)
+        └────────────────────┘   └──────────────┘
 ```
 
-| Layer | Component | Role |
-| :--- | :--- | :--- |
-| **Frontend** | Telegram Bot API / Mini App | High-throughput async handlers via `aiogram`; Vanilla JS/HTML Mini App with TON Connect. |
-| **Application (AI)** | Python 3.11+ | OpenRouter GPT pipeline. Feeds strict real-time context (prices, volume) to the LLM. |
-| **Infrastructure** | C# ASP.NET Core | Handles state management, subscription tracking, usage limits, and secure API routing. |
-| **Data / Cache** | PostgreSQL + Redis | PgSQL for persistent state; Redis for hard rate limits, quotas, and API response caching. |
-| **Smart Contracts**| Tact Language | Immutable tier-based subscription ledger deployed on TON (`Tep74` conformant patterns). |
-| **Oracles/APIs** | TON API / STON.fi | Supplies live chain data, resolving DNS, jetton info, and top protocol yield pools. |
+| Layer | Where | Purpose |
+| --- | --- | --- |
+| Bot | `main.py`, `bot/`, `handlers/` | Telegram commands & callbacks (aiogram) |
+| Mini-App API | `api/miniapp_server.py` | FastAPI: auth, payments, data endpoints |
+| Mini-App UI | `miniapp-v2/` | Preact + Vite + TS front-end (see its own README) |
+| Domain logic | `core/` | pricing (source of truth), rate-limit, security, config |
+| Integrations | `services/` | TON API, DexScreener, STON.fi, OpenAI/OpenRouter, X |
+| AI | `gpt/` | context-aware GPT pipeline + guardrails |
+| Helpers | `utils/` | Redis client, formatting, realtime data |
+| Contracts | `contracts/`, `tongpt-subscription/`, `wrappers/` | Tact subscription contract |
 
 ---
 
-## 💎 TON Integration
+## Project structure
 
-TonGPT is natively woven into the TON ecosystem:
-
-1. **Tact Smart Contracts (`contracts/subscription.tact`)**: 
-   A strict, fail-closed payment state machine that accepts exactly 1, 5, or 20 TON, calculates 30-day expiries, and registers the subscription on the distributed ledger. Invalid payments automatically bounce.
-2. **TON API pipeline (`services/tonapi.py`)**: 
-   Implements an `EnhancedTONAPIClient` handling circuit breakers and exponential backoffs. It tracks raw blockchain events, resolves `.ton` DNS targets, and isolates large value transfers to classify wallet holder categories.
-3. **STON.fi Data Feed (`services/stonfi.py`)**: 
-   Fetches top pools directly from STON.fi, surfacing highest APY/TVL metrics contextually into the AI’s prompt generation.
-4. **TON Connect**: 
-   Integrated directly within the Mini App UI (`miniapp/`) allowing seamless wallet linking and authentication without leaving Telegram.
-
----
-
-## 🧠 AI Capabilities
-
-TonGPT focuses on grounded intelligence over hallucination:
-
-- **Provider Routing**: Uses OpenRouter by default (handling multiple models smoothly) falling back to OpenAI dynamically.
-- **Context Injection**: The GPT engine (`gpt/engine.py`) preemptively retrieves Top 15 trending memecoins + live TON metrics from caching logic prior to building the payload. The system prompt dynamically binds this data, ensuring the LLM replies accurately regarding immediate chain state.
-- **Safety Middleware**: Post-processes all AI outputs, scanning for regulatory triggers. Output strings containing *"sure thing"*, *"100x"*, or *"guaranteed profit"* trip an intervention flag, prepending a strict financial risk disclaimer.
-
-*(**Note**: FAISS semantic retrieval elements are currently being staged and remain in the roadmap for future ecosystem memory.)*
-
----
-
-## 🛠 Tech Stack
-
-| Domain | Technology | Purpose |
-| :--- | :--- | :--- |
-| **Bot Framework** | `aiogram`, `Python 3.11` | High performance asynchronous Telegram bot. |
-| **Backend API** | `C# ASP.NET 8.0`, `FastAPI` | Core engine API, database abstractions, Mini App host. |
-| **Smart Contracts** | `Tact`, `Blueprint` | Subscription management, native TON integration. |
-| **Database** | `PostgreSQL 15`, `Redis 7` | Data persistence, multi-layer volatile cache. |
-| **AI Access** | `OpenRouter`, `OpenAI` | Contextual reasoning and NLP parsing. |
-| **Ecosystem Oracles**| `TON API`, `STON.fi`, `DexScreener`| Live chain states, token analytics. |
-| **Deployment** | `Docker`, `docker-compose` | Containerized production and dev environment routing. |
-
----
-
-## 📂 Repository Structure
-
-```text
-TONGPT/
-├── backend/TonGPT.Engine/   # C# Backend dealing with core subscriptions and users
-├── bot/                     # Core aiogram registration, handlers routing, and configuration
-├── contracts/               # Tact smart contracts (subscription.tact) 
-├── core/                    # Security, rate limiting, and initialization routines
-├── gpt/                     # GPT engine, prompt overrides, and contextualizers
-├── handlers/                # Telegram message routing (whale alerts, payments, info)
-├── miniapp/                 # HTML/JS frontend loaded in Telegram Web App view
-├── services/                # External integrations (TON API, STON API, caching logic)
-├── utils/                   # Redis connection wrappers, live data scrappers, helpers
-├── wrappers/                # TypeScript binding outputs built from Tact contracts
-├── main.py                  # Entry execution, graceful startup/teardown
-└── docker-compose.yml       # Dev and Prod multi-container orchestration
+```
+tongpt/
+├── main.py              # bot + mini-app entrypoint (uvicorn on MINIAPP_PORT, default 8000)
+├── api/                 # FastAPI mini-app server
+├── bot/  handlers/      # Telegram command registration + handlers
+├── core/               # config, pricing, rate-limit, security
+├── services/  gpt/  utils/
+├── contracts/          # Tact smart-contract code
+├── miniapp-v2/         # Preact Mini-App (front-end)
+├── scripts/  tests/    # ops scripts + test suite
+├── docs/               # CHANGELOG, SECURITY, PRODUCTION_AUDIT, CLEANUP_PLAN, legal
+├── Dockerfile  docker-compose*.yml
+└── .env.example
 ```
 
+> Cleaning up the repo? See **[docs/CLEANUP_PLAN.md](docs/CLEANUP_PLAN.md)** and
+> the staged **[cleanup.sh](cleanup.sh)**.
+
 ---
 
-## 🏁 Quick Start
+## Development workflow
 
-### Prerequisites
-- Docker & Docker Compose
-- Node.js (for Tact compilation)
-- Python 3.11+
-- An active Telegram Bot Token (`@BotFather`)
+### 1. Backend (bot + API)
 
-### Running Locally
-
-**1. Clone & prepare environment**
 ```bash
-git clone https://github.com/preciousadegoke/TonGPT.git
-cd TonGPT
+python -m venv myenv && source myenv/bin/activate   # Windows: myenv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env                                 # fill in real secrets (never commit)
+python main.py                                       # bot + Mini-App API on :8000
 ```
-Create a `.env` file in the root directory containing these required variables:
-- `BOT_TOKEN`: From Telegram @BotFather
-- `OPENROUTER_API_KEY` (or `OPENAI_API_KEY`): For the AI Engine
-- `TONAPI_KEY`: For unlimited query routing (Optional but recommended)
-- `ENGINE_API_KEY`: A secure key to authenticate engine calls
-- `REFERRAL_SECRET`: A highly randomized 32-character hex key
-- `CORS_ALLOWED_ORIGINS`: Origins for miniapp integration (e.g. `*` for dev)
-- `PAYMENT_WALLET_ADDRESS`: Your TON wallet address for receiving payments
 
-**2. Compile Contracts (Optional)**
+Requires a running **Redis** (`REDIS_HOST/PORT/PASSWORD`) and the **C# Engine**
+(`ENGINE_URL`, `ENGINE_API_KEY`).
+
+### 2. Mini-App front-end
+
 ```bash
+cd miniapp-v2
 npm install
-npm run build
+npm run dev      # http://localhost:5173, proxies /api → :8000
+npm run build    # → miniapp-v2/dist (served by FastAPI in prod)
 ```
 
-**3. Start the Ecosystem**
-Using the provided multi-container topology:
+See `miniapp-v2/README.md`, `MIGRATION.md`, and `LAUNCH.md` for the full
+Mini-App guide and launch checklist.
+
+### 3. Smart contracts
+
 ```bash
-docker-compose up -d --build
+npm install            # root: Tact/blueprint toolchain
+npm run build          # compile the subscription contract
+npm test               # jest contract tests
 ```
-This orchestrates the C# Engine (`5090`), the Postgres/Redis datastores, the HTTP FastAPI Miniapp host, and the Python aiogram worker asynchronously.
 
-### Validating
-Once running, open Telegram:
-- `/start` to see the contextual greeting.
-- `/scan` to see the live TON DEX scanner filter.
+### 4. Docker (full stack)
 
----
-
-## 🛡 Security & Audit
-
-A structured 3-session audit identified and resolved 70 vulnerabilities across the Python bot, C# engine, and Tact contract codebases — covering payment validation, XSS, SQL injection, hardcoded secrets, and authentication weaknesses.
-
-TonGPT passed a comprehensive security audit ensuring enterprise-grade protection:
-- **Zero Fail-Open Paths:** Redis failures downgrade gracefully into local memory cache without halting core services or bypassing credit checks.
-- **Economic Defenses:** Hard limits imposed per user against TON API targets.
-- **Data Protection:** Implements standard right-to-erasure and GDPR portable packet generation via `/deletedata` and `/export`.
-- **Infrastructure:** Refactored CORS bindings and secrets rotation parameters (`PRODUCTION_READINESS_AUDIT.md`).
+```bash
+docker compose up --build   # engine, bot, web-ui (nginx), postgres, redis
+```
 
 ---
 
-## 🗺 Roadmap
+## Configuration
 
-Derived from current code stubs and ongoing implementations:
-- **Deploy the Tact subscription contract on Mainnet.** This formalizes the TON economy natively by ensuring non-custodial, peer-to-peer SaaS payment channeling.
-- **Upgrade to full FAISS-backed persistent conversation state mapping.** Creating permanent semantic memory expands TonGPT from a stateless query bot into a long-term reliable AI partner for users making ongoing ecosystem decisions.
-- **Finish Admin analytics tools and unified Twitter (X) influencer sentiment analysis flows.** Integrating social intelligence with on-chain volume provides users with a comprehensive, institutional-grade trading perspective unavailable in standard TON apps.
+All config is via environment variables — see **`.env.example`** (audited; every
+key is used). Highlights:
+
+- **Secrets:** `BOT_TOKEN`, `OPENAI_API_KEY`/`OPENROUTER_API_KEY`, `TONAPI_KEY`,
+  `ENGINE_API_KEY`, `REDIS_PASSWORD`, `X_*`. Never commit real values.
+- **Payments:** `PAYMENT_TOKEN` (Stars), `PAYMENT_WALLET_ADDRESS` (TON),
+  `TON_PAYMENTS_ENABLED`. Plan prices are defined once in `core/pricing.py`.
+- **Tuning:** `RATE_LIMIT_*`, `DEX_*`, `TON_HTTP_*` (read via `_env_int/_float/_bool`).
+
+If a secret was ever committed, rotate everything — see **[docs/SECURITY.md](docs/SECURITY.md)**.
 
 ---
 
-## 📄 License
+## Documentation
 
-MIT License. See `LICENSE` for more information.
+| Doc | What |
+| --- | --- |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Living change history |
+| [docs/SECURITY.md](docs/SECURITY.md) | Security practices + credential rotation |
+| [docs/PRODUCTION_AUDIT.md](docs/PRODUCTION_AUDIT.md) | Legal/privacy/compliance review |
+| [docs/CLEANUP_PLAN.md](docs/CLEANUP_PLAN.md) | Repo cleanup plan + structure |
+| `DISCLAIMER.md` · `PRIVACY.md` · `TERMS.md` | Legal pages (linked by the app) |
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+> **Not financial advice.** TonGPT provides informational analytics only.
+> Memecoins are highly volatile and carry significant risk of loss.

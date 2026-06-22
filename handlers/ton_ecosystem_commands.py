@@ -1,6 +1,5 @@
 from aiogram import Dispatcher, types
 from aiogram.filters import Command
-from utils.memecoin_analyzer import hybrid_ton_fetcher
 import logging
 
 logger = logging.getLogger(__name__)

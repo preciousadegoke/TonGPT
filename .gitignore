@@ -19,6 +19,12 @@ myenv/
 *.log
 *.sqlite3
 
+# 🗄️ Databases (runtime data — never commit)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
 # 📦 Virtual environments
 venv/
 env/
@@ -40,4 +46,6 @@ yarn-error.log*
 *.bak
 *.swp
 *.tmp
+*.tar
+.tmp-*
 build/

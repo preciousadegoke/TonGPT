@@ -1,561 +1,74 @@
-import os
-import time
-import requests
+"""
+services/tonapi.py — BACKWARD-COMPAT ASYNC SHIM.
+
+The real implementation now lives in services/ton_api_service.py, which uses a
+single shared httpx.AsyncClient and is fully non-blocking. Previously this module
+used synchronous `requests` + `time.sleep()` inside async handlers, which blocked
+the entire event loop.
+
+IMPORTANT: every function here is now an ASYNC coroutine. Call them with `await`.
+If you have old code doing `asyncio.to_thread(get_large_transactions, ...)` or
+`run_in_executor(..., get_transactions)`, replace it with a direct `await` — the
+functions are already async and non-blocking.
+"""
+
+from __future__ import annotations
+
 import logging
-from typing import Dict, List, Optional, Union
-import json
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
-import httpx
+from typing import Dict, List, Optional
 
-# Load environment variables
-load_dotenv()
+from services.ton_api_service import TonApiError, ton_service  # noqa: F401 (re-export)
 
-# Configure logging
 logger = logging.getLogger(__name__)
-
-# API Configuration
-TONAPI_BASE_URL = "https://tonapi.io/v2"
-TONAPI_KEY = os.getenv("TONAPI_KEY")  # Optional - TON API works without auth for basic requests
-
-# Module-level TON price cache (avoids N blocking HTTP calls per wallet command)
-_TON_PRICE_CACHE: Dict = {"price": None, "fetched_at": 0.0}
-_TON_PRICE_TTL = 60.0  # seconds
-
-
-def _get_ton_price_cached() -> float:
-    """Return cached TON/USD price; fetches fresh if cache is older than 60 seconds."""
-    now = time.time()
-    if (
-        _TON_PRICE_CACHE["price"] is not None
-        and now - _TON_PRICE_CACHE["fetched_at"] < _TON_PRICE_TTL
-    ):
-        return _TON_PRICE_CACHE["price"]
-    resp = requests.get(
-        "https://api.coingecko.com/api/v3/simple/price",
-        params={"ids": "the-open-network", "vs_currencies": "usd"},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    price = data["the-open-network"]["usd"]
-    if not isinstance(price, (int, float)) or price <= 0:
-        raise ValueError(f"Invalid TON price: {price}")
-    _TON_PRICE_CACHE["price"] = float(price)
-    _TON_PRICE_CACHE["fetched_at"] = now
-    return _TON_PRICE_CACHE["price"]
-
-
 
 
 async def get_ton_price_usd() -> float:
-    """
-    Fetch live TON/USD price. Raises on failure.
-    Never fall back to a hardcoded value — a wrong price enables underpayment attacks.
-    """
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(
-            "https://api.coingecko.com/api/v3/simple/price",
-            params={"ids": "the-open-network", "vs_currencies": "usd"},
-        )
-        resp.raise_for_status()
-        price = resp.json()["the-open-network"]["usd"]
-        if not isinstance(price, (int, float)) or price <= 0:
-            raise ValueError(f"Invalid TON price: {price}")
-        return float(price)
-
-class EnhancedTONAPIClient:
-    """Enhanced TON API client with whale transaction monitoring and basic wallet functions"""
-    
-    def __init__(self, api_key: Optional[str] = None):
-        self.base_url = TONAPI_BASE_URL
-        self.api_key = api_key or TONAPI_KEY
-        
-        # Set up headers
-        self.headers = {
-            'User-Agent': 'TonGPT-Bot/1.0',
-            'Accept': 'application/json'
-        }
-        
-        # Add authorization if API key is provided
-        if self.api_key:
-            self.headers['Authorization'] = f'Bearer {self.api_key}'
-        
-        self.session = requests.Session()
-        self.whale_thresholds = {
-            'small_whale': 1000,    # 1K TON
-            'medium_whale': 10000,  # 10K TON
-            'large_whale': 100000,  # 100K TON
-            'mega_whale': 1000000   # 1M TON
-        }
-        
-    def _request_with_backoff(self, url: str, params: dict = None, user_id: int = None, max_retries: int = 3) -> requests.Response:
-        """Internal method to execute requests with exponential backoff and user quotas"""
-        import time
-        
-        # 1. User Quota Guard
-        if user_id:
-            try:
-                from utils.redis_conn import redis_client
-                rc = getattr(redis_client, "client", redis_client)
-                if rc:
-                    quota_key = f"tonapi_quota:{user_id}"
-                    count = rc.incr(quota_key)
-                    if count == 1:
-                        rc.expire(quota_key, 3600) # 1 hour TTL
-                    if count > 100: # Max 100 requests per hour per user
-                        logger.warning(f"TON API user quota exceeded for {user_id}")
-                        raise Exception("TON API global quota exceeded. Please try again later.")
-            except Exception as e:
-                # Fail open if redis is broken so we don't crash
-                if str(e).startswith("TON API global quota"): raise
-        
-        # 2. Exponential Backoff Circuit Breaker
-        base_delay = 1.0
-        for attempt in range(max_retries):
-            response = self.session.get(url, params=params, timeout=10)
-            if response.status_code == 429: # Rate Limited by TON API
-                if attempt == max_retries - 1:
-                    logger.error("TON API circuit breaker: Max retries exhausted on 429.")
-                    response.raise_for_status()
-                
-                delay = base_delay * (2 ** attempt)
-                logger.warning(f"TON API rate limit hit (429). Backing off for {delay}s...")
-                time.sleep(delay)
-            else:
-                response.raise_for_status()
-                return response
-                
-        raise Exception("TON API request failed unexpectedly")
-    
-    # ============ BASIC WALLET FUNCTIONS (Your original functions enhanced) ============
-    
-    def get_wallet_info(self, address: str, user_id: int = None) -> dict:
-        """
-        Get basic wallet info like balance and account state.
-        Enhanced version of your original function.
-        """
-        try:
-            url = f"{self.base_url}/accounts/{address}"
-            response = self._request_with_backoff(url, user_id=user_id)
-            
-            data = response.json()
-            
-            # Add enhanced fields
-            balance_ton = int(data.get('balance', 0)) / 1e9  # Convert from nanotons
-            ton_price_usd = _get_ton_price_cached()
-            
-            enhanced_data = {
-                **data,  # Keep original data
-                'balance_ton': balance_ton,
-                'balance_usd': self._estimate_usd_value(balance_ton, ton_price_usd),
-                'whale_category': self._classify_whale_size(balance_ton),
-                'last_activity_formatted': self._format_timestamp(data.get('last_activity', 0))
-            }
-            
-            return enhanced_data
-            
-        except Exception as e:
-            logger.error(f"Error fetching wallet info for {address}: {e}")
-            raise
-    
-    def get_jettons(self, address: str, user_id: int = None) -> dict:
-        """
-        Fetch jettons (tokens) owned by a wallet.
-        Enhanced version of your original function.
-        """
-        try:
-            url = f"{self.base_url}/accounts/{address}/jettons"
-            response = self._request_with_backoff(url, user_id=user_id)
-            
-            data = response.json()
-            
-            # Enhance jetton data with additional info
-            if 'balances' in data:
-                for balance in data['balances']:
-                    jetton = balance.get('jetton', {})
-                    # Add token info if available
-                    token_info = self.get_token_info_from_tonviewer(jetton.get('address', ''))
-                    if token_info:
-                        balance['token_info'] = token_info
-            
-            return data
-            
-        except Exception as e:
-            logger.error(f"Error fetching jettons for {address}: {e}")
-            raise
-    
-    def get_transactions(self, address: str, limit: int = 10, user_id: int = None) -> dict:
-        """
-        Get recent transactions from a wallet address.
-        Enhanced version of your original function.
-        """
-        try:
-            url = f"{self.base_url}/accounts/{address}/transactions"
-            params = {'limit': limit}
-            response = self._request_with_backoff(url, params=params, user_id=user_id)
-
-            data = response.json()
-
-            # Fetch price ONCE before the loop to avoid N blocking HTTP calls
-            ton_price_usd = _get_ton_price_cached()
-
-            if 'transactions' in data:
-                for tx in data['transactions']:
-                    amount = self._extract_transaction_amount_from_tx(tx)
-                    if amount:
-                        amount_ton = amount / 1e9
-                        tx['amount_ton'] = amount_ton
-                        tx['whale_category'] = self._classify_whale_size(amount_ton)
-                        tx['usd_value'] = self._estimate_usd_value(amount_ton, ton_price_usd)
-
-                    if 'now' in tx:
-                        tx['timestamp_formatted'] = self._format_timestamp(tx['now'])
-
-            return data
-
-        except Exception as e:
-            logger.error(f"Error fetching transactions for {address}: {e}")
-            raise
-
-    
-    def resolve_dns(self, domain: str) -> dict:
-        """
-        Resolve a TON DNS domain like `ton.gpt`.
-        Your original function unchanged.
-        """
-        try:
-            url = f"{self.base_url}/dns/{domain}"
-            response = self.session.get(url, timeout=10)
-            response.raise_for_status()
-            return response.json()
-            
-        except Exception as e:
-            logger.error(f"Error resolving DNS for {domain}: {e}")
-            raise
-    
-    # ============ WHALE MONITORING FUNCTIONS ============
-    
-    def get_token_info_from_tonviewer(self, contract_address: str) -> Optional[Dict]:
-        """Get token info from TON API"""
-        try:
-            # Try to get jetton info
-            url = f"{self.base_url}/jettons/{contract_address}"
-            response = self.session.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                return {
-                    'name': data.get('metadata', {}).get('name', 'Unknown'),
-                    'symbol': data.get('metadata', {}).get('symbol', ''),
-                    'description': data.get('metadata', {}).get('description', ''),
-                    'image': data.get('metadata', {}).get('image', ''),
-                    'decimals': data.get('metadata', {}).get('decimals', 9),
-                    'total_supply': data.get('total_supply', 0),
-                    'holders_count': data.get('holders_count', 0),
-                    'address': contract_address
-                }
-            
-            # Fallback: try to get account info
-            url = f"{self.base_url}/accounts/{contract_address}"
-            response = self.session.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                return {
-                    'name': 'TON Account',
-                    'symbol': 'TON',
-                    'balance': data.get('balance', 0),
-                    'status': data.get('status', 'unknown'),
-                    'address': contract_address,
-                    'last_activity': data.get('last_activity', 0)
-                }
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error fetching token info for {contract_address}: {e}")
-            return None
-    
-    def get_large_transactions(self, limit: int = 50, min_amount: float = 1000.0) -> List[Dict]:
-        """Get large TON transactions (whale movements)"""
-        try:
-            transactions = []
-            ton_price_usd = _get_ton_price_cached()
-            
-            # Method 1: Get transactions from known whale addresses
-            whale_addresses = self._get_known_whale_addresses()
-            
-            for address in whale_addresses[:10]:  # Limit to avoid rate limits
-                try:
-                    txs = self._get_address_events(address, limit=10)
-                    for tx in txs:
-                        amount = self._extract_transaction_amount(tx)
-                        if amount and amount >= min_amount:
-                            transactions.append({
-                                'hash': tx.get('hash', ''),
-                                'from_address': self._get_transaction_source(tx),
-                                'to_address': self._get_transaction_destination(tx),
-                                'amount': amount,
-                                'amount_ton': amount / 1e9,
-                                'timestamp': tx.get('timestamp', 0),
-                                'type': self._classify_transaction_type(tx),
-                                'whale_category': self._classify_whale_size(amount / 1e9),
-                                'usd_value': self._estimate_usd_value(amount / 1e9, ton_price_usd),
-                                'method': 'whale_address_tracking'
-                            })
-                except Exception as e:
-                    logger.debug(f"Error getting transactions for {address}: {e}")
-                    continue
-            
-            # Sort by timestamp and amount
-            transactions.sort(key=lambda x: (x.get('timestamp', 0), x.get('amount_ton', 0)), reverse=True)
-            
-            # Remove duplicates and limit results
-            seen_hashes = set()
-            unique_transactions = []
-            for tx in transactions:
-                if tx['hash'] not in seen_hashes and len(unique_transactions) < limit:
-                    seen_hashes.add(tx['hash'])
-                    unique_transactions.append(tx)
-            
-            logger.info(f"Found {len(unique_transactions)} large transactions")
-            return unique_transactions if unique_transactions else self._get_fallback_transactions()
-            
-        except Exception as e:
-            logger.error(f"Error getting large transactions: {e}")
-            return self._get_fallback_transactions()
-    
-    def get_whale_alert_summary(self, hours: int = 24) -> Dict:
-        """Get whale activity summary for the last N hours"""
-        try:
-            transactions = self.get_large_transactions(limit=100)
-            
-            # Filter by time
-            cutoff_time = datetime.now() - timedelta(hours=hours)
-            cutoff_timestamp = int(cutoff_time.timestamp())
-            
-            recent_txs = [tx for tx in transactions if tx.get('timestamp', 0) > cutoff_timestamp]
-            
-            # Calculate summary stats
-            total_volume = sum(tx.get('amount_ton', 0) for tx in recent_txs)
-            total_usd_value = sum(tx.get('usd_value', 0) for tx in recent_txs)
-            
-            whale_categories = {}
-            for tx in recent_txs:
-                category = tx.get('whale_category', 'unknown')
-                whale_categories[category] = whale_categories.get(category, 0) + 1
-            
-            return {
-                'period_hours': hours,
-                'total_transactions': len(recent_txs),
-                'total_volume_ton': total_volume,
-                'total_usd_value': total_usd_value,
-                'whale_breakdown': whale_categories,
-                'largest_transaction': max(recent_txs, key=lambda x: x.get('amount_ton', 0)) if recent_txs else None,
-                'most_recent': recent_txs[0] if recent_txs else None
-            }
-            
-        except Exception as e:
-            logger.error(f"Error getting whale summary: {e}")
-            return {
-                'period_hours': hours,
-                'total_transactions': 0,
-                'error': str(e)
-            }
-    
-    # ============ HELPER METHODS ============
-    
-    def _get_address_events(self, address: str, limit: int = 10) -> List[Dict]:
-        """Get events for a specific address"""
-        try:
-            url = f"{self.base_url}/accounts/{address}/events"
-            params = {'limit': limit}
-            response = self.session.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            
-            data = response.json()
-            return data.get('events', [])
-            
-        except Exception as e:
-            logger.debug(f"Error getting events for {address}: {e}")
-            return []
-    
-    def _get_known_whale_addresses(self) -> List[str]:
-        """Get list of known whale addresses to monitor"""
-        return [
-            "EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t",
-            # Add more known whale/exchange addresses here
-        ]
-    
-    def _extract_transaction_amount(self, event: Dict) -> Optional[float]:
-        """Extract TON amount from event"""
-        try:
-            actions = event.get('actions', [])
-            for action in actions:
-                if action.get('type') == 'TonTransfer':
-                    amount = action.get('TonTransfer', {}).get('amount', 0)
-                    return float(amount)
-            return None
-        except:
-            return None
-    
-    def _extract_transaction_amount_from_tx(self, transaction: Dict) -> Optional[float]:
-        """Extract TON amount from transaction object"""
-        try:
-            # Look for amount in transaction structure
-            in_msg = transaction.get('in_msg', {})
-            if in_msg and 'value' in in_msg:
-                return float(in_msg['value'])
-            
-            # Look in out messages
-            out_msgs = transaction.get('out_msgs', [])
-            for msg in out_msgs:
-                if 'value' in msg:
-                    return float(msg['value'])
-            
-            return None
-        except:
-            return None
-    
-    def _get_transaction_source(self, event: Dict) -> str:
-        """Get source address from event"""
-        try:
-            return event.get('account', {}).get('address', 'unknown')
-        except:
-            return 'unknown'
-    
-    def _get_transaction_destination(self, event: Dict) -> str:
-        """Get destination address from event"""
-        try:
-            actions = event.get('actions', [])
-            for action in actions:
-                if 'Transfer' in action.get('type', ''):
-                    recipient = action.get(action['type'], {}).get('recipient', {})
-                    return recipient.get('address', 'unknown')
-            return 'unknown'
-        except:
-            return 'unknown'
-    
-    def _classify_transaction_type(self, event: Dict) -> str:
-        """Classify transaction type"""
-        try:
-            actions = event.get('actions', [])
-            if not actions:
-                return 'unknown'
-            
-            action_types = [action.get('type', '') for action in actions]
-            
-            if 'TonTransfer' in action_types:
-                return 'ton_transfer'
-            elif 'JettonTransfer' in action_types:
-                return 'jetton_transfer'
-            elif 'ContractDeploy' in action_types:
-                return 'contract_deploy'
-            else:
-                return 'other'
-        except:
-            return 'unknown'
-    
-    def _classify_whale_size(self, amount_ton: float) -> str:
-        """Classify whale size based on amount"""
-        if amount_ton >= self.whale_thresholds['mega_whale']:
-            return 'mega_whale'
-        elif amount_ton >= self.whale_thresholds['large_whale']:
-            return 'large_whale'
-        elif amount_ton >= self.whale_thresholds['medium_whale']:
-            return 'medium_whale'
-        elif amount_ton >= self.whale_thresholds['small_whale']:
-            return 'small_whale'
-        else:
-            return 'regular'
-    
-    def _estimate_usd_value(self, amount_ton: float, ton_price_usd: float) -> float:
-        """Estimate USD value of TON amount using a pre-fetched price."""
-        return amount_ton * ton_price_usd
-    
-    def _format_timestamp(self, timestamp: int) -> str:
-        """Format timestamp to readable string"""
-        try:
-            return datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
-        except:
-            return 'unknown'
-    
-    def _get_fallback_transactions(self) -> List[Dict]:
-        """Fallback transactions when API fails"""
-        current_time = int(datetime.now().timestamp())
-        
-        return [
-            {
-                'hash': 'fallback_tx_1',
-                'from_address': 'EQExample1...',
-                'to_address': 'EQExample2...',
-                'amount_ton': 50000,
-                'timestamp': current_time - 300,
-                'type': 'ton_transfer',
-                'whale_category': 'large_whale',
-                'usd_value': 125000,
-                'method': 'fallback_data',
-                'note': 'Large TON movement detected'
-            }
-        ]
+    """STRICT TON/USD price for payments. Raises if no fresh-enough price."""
+    return await ton_service.get_ton_price_usd()
 
 
-# ============ GLOBAL CLIENT INSTANCE ============
-ton_client = EnhancedTONAPIClient()
+async def get_ton_price_best_effort() -> float:
+    """Non-strict price for display; returns last known or 0.0, never raises."""
+    return await ton_service.get_ton_price_best_effort()
 
-# ============ BACKWARD COMPATIBILITY FUNCTIONS (Your original API) ============
-def get_wallet_info(address: str, user_id: int = None) -> dict:
-    """Your original function - now enhanced"""
-    return ton_client.get_wallet_info(address, user_id)
 
-def get_jettons(address: str, user_id: int = None) -> dict:
-    """Your original function - now enhanced"""
-    return ton_client.get_jettons(address, user_id)
+async def get_wallet_info(address: str, user_id: Optional[int] = None) -> dict:
+    return await ton_service.get_wallet_info(address, user_id)
 
-def get_transactions(address: str, limit: int = 10, user_id: int = None) -> dict:
-    """Your original function - now enhanced"""
-    return ton_client.get_transactions(address, limit, user_id)
 
-def get_wallet_transactions(address: str, limit: int = 10, user_id: int = None) -> dict:
-    """Alias for get_transactions for backward compatibility"""
-    return get_transactions(address, limit, user_id)
+async def get_jettons(address: str, user_id: Optional[int] = None) -> dict:
+    return await ton_service.get_jettons(address, user_id)
 
-def resolve_dns(domain: str) -> dict:
-    """Your original function - unchanged"""
-    return ton_client.resolve_dns(domain)
 
-# ============ NEW WHALE MONITORING FUNCTIONS ============
-def get_token_info_from_tonviewer(contract_address: str) -> Optional[Dict]:
-    """Get token information"""
-    return ton_client.get_token_info_from_tonviewer(contract_address)
+async def get_transactions(address: str, limit: int = 10, user_id: Optional[int] = None) -> dict:
+    return await ton_service.get_transactions(address, limit, user_id)
 
-def get_large_transactions(limit: int = 50, min_amount: float = 1000.0) -> List[Dict]:
-    """Get large TON transactions for whale monitoring"""
-    return ton_client.get_large_transactions(limit=limit, min_amount=min_amount)
 
-def get_whale_summary(hours: int = 24) -> Dict:
-    """Get whale activity summary"""
-    return ton_client.get_whale_alert_summary(hours=hours)
+async def get_wallet_transactions(address: str, limit: int = 10, user_id: Optional[int] = None) -> dict:
+    """Alias for get_transactions (backward compatibility)."""
+    return await ton_service.get_transactions(address, limit, user_id)
 
-# ============ UTILITY FUNCTIONS ============
-def test_ton_api_connection() -> Dict:
-    """Test TON API connectivity"""
-    try:
-        response = ton_client.session.get(f"{ton_client.base_url}/jettons", timeout=5)
-        
-        return {
-            'api_status': 'online' if response.status_code == 200 else 'error',
-            'status_code': response.status_code,
-            'whale_tracking': 'enabled',
-            'fallback_available': True,
-            'auth_configured': bool(ton_client.api_key)
-        }
-    except Exception as e:
-        return {
-            'api_status': 'offline',
-            'error': str(e),
-            'whale_tracking': 'fallback_mode',
-            'fallback_available': True,
-            'auth_configured': bool(ton_client.api_key)
-        }
+
+async def resolve_dns(domain: str) -> dict:
+    return await ton_service.resolve_dns(domain)
+
+
+async def get_large_transactions(limit: int = 50, min_amount: float = 1000.0) -> List[Dict]:
+    return await ton_service.get_large_transactions(limit=limit, min_amount=min_amount)
+
+
+async def get_whale_summary(hours: int = 24) -> Dict:
+    return await ton_service.get_whale_alert_summary(hours=hours)
+
+
+async def test_ton_api_connection() -> Dict:
+    """Async health probe. NOTE: now a coroutine — callers must `await`."""
+    return await ton_service.test_connection()
+
+
+__all__ = [
+    "TonApiError", "ton_service",
+    "get_ton_price_usd", "get_ton_price_best_effort",
+    "get_wallet_info", "get_jettons", "get_transactions", "get_wallet_transactions",
+    "resolve_dns", "get_large_transactions", "get_whale_summary", "test_ton_api_connection",
+]

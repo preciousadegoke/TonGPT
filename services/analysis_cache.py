@@ -259,7 +259,7 @@ async def get_wallet_info_cached(wallet_address: str) -> Dict[str, Any]:
     """Cached wallet information"""
     try:
         from services.tonapi import get_wallet_info
-        return get_wallet_info(wallet_address)
+        return await get_wallet_info(wallet_address)  # now async/non-blocking
     except Exception as e:
         logger.error(f"Wallet info fetch error: {e}")
         return {}

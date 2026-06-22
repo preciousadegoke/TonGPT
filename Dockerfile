@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for TonGPT production deployment
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 # Set build arguments
 ARG BUILD_ENV=production
@@ -30,8 +30,15 @@ RUN pip install --upgrade pip && \
     pip install -r requirements.txt && \
     pip install -r requirements-prod.txt
 
+
+# =========================
 # Production stage
-FROM python:3.11-slim as production
+# =========================
+FROM python:3.11-slim AS production
+
+# ✅ IMPORTANT: declare ARGs HERE (scope fix)
+ARG APP_VERSION=1.0.0
+ARG BUILD_ENV=production
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
@@ -74,8 +81,10 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # Default command
 CMD ["python", "main.py"]
 
-# Labels for metadata
+# =========================
+# Metadata labels
+# =========================
 LABEL maintainer="tongpt@example.com" \
-      version="${APP_VERSION}" \
-      description="TonGPT Telegram Bot for TON Memecoin Analysis" \
-      build_env="${BUILD_ENV}"
+    version="${APP_VERSION}" \
+    description="TonGPT Telegram Bot for TON Memecoin Analysis" \
+    build_env="${BUILD_ENV}"

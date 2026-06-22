@@ -13,8 +13,8 @@ async def get_recent_transactions(address: str, limit: int = 10) -> List[Dict]:
     """Fetch recent transactions for a TON address (async wrapper around tonapi)."""
     try:
         from services.tonapi import get_transactions
-        loop = asyncio.get_event_loop()
-        data = await loop.run_in_executor(None, lambda: get_transactions(address, limit))
+        # get_transactions is now an async coroutine (non-blocking) — await directly.
+        data = await get_transactions(address, limit)
         if data and isinstance(data.get("transactions"), list):
             return data["transactions"]
         return []
