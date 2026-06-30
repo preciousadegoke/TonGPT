@@ -7,7 +7,19 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#07080c" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#fbfbfd" media="(prefers-color-scheme: light)" />
+    <meta name="description" content="TonGPT — AI-powered TON intelligence. Whale alerts, influencer signals, and on-chain analysis in your pocket." />
     <title>TonGPT — TON AI Intelligence</title>
+
+    <!-- Inter variable font. Preconnect keeps it off the critical path; font-display:swap
+         means we never block first paint — the premium system stack shows instantly. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap"
+    />
 
     <!-- Telegram WebApp SDK must load before the app so window.Telegram exists on first render. -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -17,10 +29,10 @@
       (function () {
         try {
           var tp = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.themeParams;
-          var bg = (tp && tp.bg_color) || '#000000';
-          document.documentElement.style.background = bg;
           var scheme = (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.colorScheme) || 'dark';
           document.documentElement.classList.add(scheme);
+          var bg = (tp && tp.bg_color) || (scheme === 'light' ? '#fbfbfd' : '#07080c');
+          document.documentElement.style.background = bg;
         } catch (e) {}
       })();
     </script>

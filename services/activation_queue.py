@@ -104,6 +104,7 @@ async def enqueue(item: Dict[str, Any]) -> None:
         "external_id": item["external_id"],
         "duration_days": int(item.get("duration_days", 30)),
         "amount_ton": float(item.get("amount_ton", 0.0)),
+        "amount_stars": int(item.get("amount_stars", 0)),  # needed for Engine amount check
         "plan_key": item.get("plan_key"),
         "enqueued_at": time.time(),
         "attempts": int(item.get("attempts", 0)),
@@ -147,6 +148,7 @@ async def drain_once() -> int:
                 external_id=it["external_id"],
                 duration_days=it.get("duration_days", 30),
                 amount_ton=it.get("amount_ton", 0.0),
+                amount_stars=it.get("amount_stars", 0),
             )
         except Exception as e:  # never let one bad item stop the drain
             res = {"ok": False, "error": str(e), "permanent": False}

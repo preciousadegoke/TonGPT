@@ -2,6 +2,7 @@ import { useLocation } from 'preact-iso';
 import { useEffect, useState } from 'preact/hooks';
 import { ScreenHeader } from '@/components/layout/ScreenHeader';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { Icon } from '@/components/ui/Icon';
 import { useBackButton } from '@/hooks/useBackButton';
 import { wallet, isWalletConnected, toast } from '@/store';
 import { connectWallet, disconnectWallet } from '@/lib/tonconnect';
@@ -45,36 +46,44 @@ export default function Wallet() {
         <>
           {/* Balance hero */}
           <section
-            class="card p-5 animate-scale-in"
-            style={{ background: 'linear-gradient(135deg, color-mix(in srgb, var(--accent) 20%, var(--surface)), var(--surface))' }}
+            class="relative rounded-3xl border p-5 overflow-hidden card-raised animate-scale-in"
+            style={{ background: 'linear-gradient(135deg, color-mix(in srgb, var(--accent) 18%, var(--surface)), var(--surface) 65%)' }}
           >
-            <p class="text-hint text-xs uppercase tracking-wider">Balance</p>
+            <div
+              class="absolute -top-14 -right-10 w-40 h-40 rounded-full blur-2xl opacity-40 pointer-events-none"
+              style={{ background: 'radial-gradient(circle, var(--accent), transparent 70%)' }}
+            />
+            <p class="relative text-hint text-[11px] uppercase tracking-[0.14em]">Balance</p>
             {balance === undefined ? (
               <Skeleton w="8rem" h="2rem" />
             ) : balance === null ? (
-              <p class="text-lg font-semibold text-hint">Unavailable</p>
+              <p class="relative text-lg font-semibold text-hint">Unavailable</p>
             ) : (
-              <p class="text-3xl font-bold tabular-nums">
-                {balance.toFixed(2)} <span class="text-base font-medium text-hint">TON</span>
+              <p class="relative text-[34px] font-extrabold tracking-tight tabular-nums">
+                {balance.toFixed(2)} <span class="text-base font-semibold text-hint">TON</span>
               </p>
             )}
 
-            <div class="mt-4 flex items-center gap-3">
-              <div class="w-10 h-10 rounded-2xl bg-accent/20 grid place-items-center text-xl">👛</div>
+            <div class="relative mt-4 flex items-center gap-3">
+              <div class="w-10 h-10 rounded-2xl bg-accent/20 grid place-items-center text-accent">
+                <Icon name="wallet" size={20} />
+              </div>
               <div class="min-w-0 flex-1">
                 <p class="font-semibold text-sm truncate">{w.appName ?? 'TON Wallet'}</p>
                 <button class="text-hint text-xs font-mono flex items-center gap-1.5" onClick={copy}>
                   {shortAddr(w.friendlyAddress, 6, 6)}
-                  <span class="text-accent font-sans font-semibold">Copy</span>
+                  <span class="text-accent font-sans font-semibold inline-flex items-center gap-0.5">
+                    <Icon name="copy" size={12} /> Copy
+                  </span>
                 </button>
               </div>
             </div>
           </section>
 
           {/* ton_proof verification status — clearly explained */}
-          <section class={`card p-4 ${w.authed ? 'border-positive/40' : 'border-gold/40'}`}>
+          <section class={`card-raised p-4 ${w.authed ? 'border-positive/40' : 'border-gold/40'}`}>
             <div class="flex items-center gap-2">
-              <span class={w.authed ? 'text-positive' : 'text-gold'}>{w.authed ? '🛡️' : '⚠️'}</span>
+              <Icon name="shield" size={16} class={w.authed ? 'text-positive' : 'text-gold'} />
               <p class="font-semibold text-sm">
                 {w.authed ? 'Ownership verified' : 'Ownership not verified'}
               </p>
@@ -92,20 +101,20 @@ export default function Wallet() {
           </section>
 
           {/* Actions */}
-          <div class="card divide-y divide-border">
+          <div class="card-raised divide-hairline overflow-hidden">
             <button
               class="w-full flex items-center gap-3 p-4 text-left active:bg-surface-2 transition-colors"
               onClick={() => w.address && openTelegramLink(tonScanUrl(w.address))}
             >
-              <span class="text-xl">🔎</span>
+              <Icon name="external" size={18} class="text-accent" />
               <span class="flex-1 font-semibold text-sm">View on Tonscan</span>
-              <span class="text-hint">›</span>
+              <Icon name="chevron-right" size={16} class="text-hint" />
             </button>
             <button
               class="w-full flex items-center gap-3 p-4 text-left text-negative active:bg-surface-2 transition-colors"
               onClick={() => { haptic.impact('light'); disconnectWallet(); }}
             >
-              <span class="text-xl">⏏️</span>
+              <Icon name="refresh" size={18} />
               <span class="flex-1 font-semibold text-sm">Disconnect</span>
             </button>
           </div>

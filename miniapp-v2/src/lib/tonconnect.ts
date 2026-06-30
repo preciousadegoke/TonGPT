@@ -55,6 +55,10 @@ async function verifyProof(w: Wallet) {
       address: w.account.address,
       network: w.account.chain,
       public_key: w.account.publicKey,
+      // REQUIRED: the StateInit is the trust anchor the backend uses to bind the
+      // public key to the address (hash(StateInit) == address). Without it the
+      // server cannot prove ownership and will reject the link.
+      state_init: w.account.walletStateInit,
       proof,
     });
     return true;

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
 import { ScreenHeader } from '@/components/layout/ScreenHeader';
+import { Icon } from '@/components/ui/Icon';
 import { api } from '@/lib/api';
 import { endpoints } from '@/config';
 import { haptic } from '@/lib/telegram';
@@ -47,11 +48,22 @@ export default function AIChat() {
 
       <div class="flex-1 space-y-3">
         {messages.length === 0 && (
-          <div class="space-y-3 pt-4">
-            <p class="text-hint text-sm">Try asking:</p>
-            {SUGGESTIONS.map((s) => (
-              <button key={s} class="card w-full text-left p-3 text-sm active:scale-[0.99]" onClick={() => send(s)}>
-                {s}
+          <div class="space-y-3 pt-2">
+            <div class="text-center py-4 space-y-2">
+              <span class="inline-grid place-items-center w-14 h-14 rounded-2xl bg-accent/12 text-accent">
+                <Icon name="sparkles" size={26} />
+              </span>
+              <p class="text-hint text-sm">Your on-chain analyst. Try asking:</p>
+            </div>
+            {SUGGESTIONS.map((s, i) => (
+              <button
+                key={s}
+                class="card-raised w-full text-left p-3.5 text-sm pressable flex items-center justify-between gap-2 animate-slide-up"
+                style={{ animationDelay: `${i * 60}ms` }}
+                onClick={() => send(s)}
+              >
+                <span>{s}</span>
+                <Icon name="arrow-up" size={15} class="text-hint rotate-45 shrink-0" />
               </button>
             ))}
           </div>
@@ -94,8 +106,8 @@ export default function AIChat() {
           onInput={(e) => setInput((e.target as HTMLInputElement).value)}
           aria-label="Your question"
         />
-        <button type="submit" class="btn-primary px-4 py-3" disabled={busy || !input.trim()} aria-label="Send">
-          ↑
+        <button type="submit" class="btn-primary px-4 py-3 aspect-square" disabled={busy || !input.trim()} aria-label="Send">
+          <Icon name="send" size={18} />
         </button>
       </form>
     </div>

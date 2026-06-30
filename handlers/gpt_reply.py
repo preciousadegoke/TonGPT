@@ -19,17 +19,17 @@ MAX_INPUT = 2000
 
 
 def sanitize_user_input(text: str) -> str:
+    """Trim and length-cap user input.
+
+    GPT-002: we deliberately do NOT try to strip "prompt-injection" phrases. A
+    3-phrase regex blocklist is trivially bypassed (rewording, other languages,
+    spacing, encoding), gives false confidence, and can mangle legitimate text.
+    Real injection defense lives at the system-prompt / tool-permission level,
+    not in string filtering — so this just bounds the length.
+    """
     if not text:
         return ""
-    text = text.strip()[:MAX_INPUT]
-    injection_patterns = [
-        r"(?i)ignore\s+(all\s+)?(previous|prior|above)\s+instructions?",
-        r"(?i)you\s+are\s+now\s+",
-        r"(?i)disregard\s+your\s+(system\s+)?prompt",
-    ]
-    for p in injection_patterns:
-        text = re.sub(p, "[removed]", text)
-    return text
+    return text.strip()[:MAX_INPUT]
 
 
 async def _moderation_allows(message: types.Message, text: str, user_id: int) -> bool:
@@ -44,9 +44,16 @@ async def _moderation_allows(message: types.Message, text: str, user_id: int) ->
         from services.moderation_service import moderate_text
         result = await moderate_text(text, user_id=user_id)
     except Exception as e:
-        # Last-resort guard (e.g. import error). Default to allowing.
-        logger.error("moderation_unavailable", user_id=user_id, err=str(e), exc_info=True)
-        return True
+        # Last-resort guard (e.g. import error). FAIL CLOSED (MOD-001/GPT-001):
+        # if we cannot even reach moderation, block rather than emit unmoderated
+        # AI output. A persistent failure here is a deploy error the startup
+        # readiness check (report_startup_status) is designed to surface.
+        logger.critical("moderation_unavailable_blocking", user_id=user_id, err=str(e), exc_info=True)
+        await message.reply(
+            "⚠️ Our safety check is temporarily unavailable, so I can't process this "
+            "right now. Please try again shortly."
+        )
+        return False
 
     # Log every outcome clearly: warnings for flagged content, info otherwise.
     log = logger.warning if result.flagged else logger.info
@@ -99,14 +106,12 @@ async def _handle_gpt_query_impl(message: types.Message):
             limiter = get_rate_limiter()
             if limiter:
                 ip_address = getattr(message, "_ip_address", None)
-                tier = "free"
-                try:
-                    from services.engine_client import engine_client
-                    status = await engine_client.get_user_status(str(user_id))
-                    tier = (status.get("plan") or "Free").lower()
-                except Exception:
-                    pass
-                    
+                # GPT-003: reuse the tier the rate-limit decorator already resolved
+                # (cached on the limiter for this request) instead of making a
+                # second get_user_status round-trip to the Engine.
+                from core.rate_limiter import _resolve_tier
+                tier = await _resolve_tier(limiter, user_id)
+
                 risk_score, risk_tier = await limiter.get_user_risk_score(user_id, tier, ip_address)
                 
                 if risk_tier == "High Risk":
@@ -130,6 +135,22 @@ async def _handle_gpt_query_impl(message: types.Message):
             return
         
         if response:
+            # MOD-002: screen the MODEL OUTPUT, not just the input. A jailbreak
+            # that slips past input moderation could still elicit harmful text;
+            # we re-check the generated response and refuse to send flagged
+            # content. (We block only on a genuine category hit — a transient
+            # moderation outage doesn't nuke a response whose INPUT already
+            # passed moderation upstream.)
+            try:
+                from services.moderation_service import moderate_text
+                out_mod = await moderate_text(response, user_id=user_id)
+                if out_mod.flagged and not out_mod.allowed:
+                    logger.warning("gpt_output_blocked", user_id=user_id, categories=out_mod.categories)
+                    await message.reply(out_mod.user_message or "🚫 I can't share that response.")
+                    return
+            except Exception as e:
+                logger.error("output_moderation_error", user_id=user_id, err=str(e))
+
             # Split long messages
             if len(response) > 4000:
                 parts = [response[i:i+4000] for i in range(0, len(response), 4000)]

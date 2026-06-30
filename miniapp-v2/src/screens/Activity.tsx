@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { ScreenHeader } from '@/components/layout/ScreenHeader';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { Segmented } from '@/components/ui/Segmented';
 import { api } from '@/lib/api';
 import { endpoints } from '@/config';
 import { timeAgo } from '@/lib/format';
@@ -28,10 +29,15 @@ export default function Activity() {
     <div class="screen space-y-4">
       <ScreenHeader title="Activity" subtitle="Whale moves & your payments" />
 
-      <div class="grid grid-cols-2 gap-2 p-1 bg-surface-2 rounded-2xl" role="tablist">
-        <TabBtn active={tab === 'whales'} onClick={() => setTab('whales')}>🐋 Whale alerts</TabBtn>
-        <TabBtn active={tab === 'payments'} onClick={() => setTab('payments')}>🧾 Payments</TabBtn>
-      </div>
+      <Segmented<Tab>
+        aria-label="Activity filter"
+        value={tab}
+        onChange={setTab}
+        options={[
+          { value: 'whales', label: '🐋 Whale alerts' },
+          { value: 'payments', label: '🧾 Payments' },
+        ]}
+      />
 
       {tab === 'whales' ? (
         <List
@@ -72,29 +78,16 @@ export default function Activity() {
   );
 }
 
-function TabBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: any }) {
-  return (
-    <button
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      class={`py-2.5 rounded-xl text-sm font-semibold transition-colors ${active ? 'bg-accent text-accent-fg' : 'text-hint'}`}
-    >
-      {children}
-    </button>
-  );
-}
-
 function List<T>({ data, empty, render }: { data: T[] | null; empty: string; render: (item: T, i: number) => any }) {
   if (data === null) {
     return (
-      <div class="card divide-y divide-border">
+      <div class="card-raised divide-hairline">
         {[0, 1, 2, 3].map((i) => <div key={i} class="p-4"><Skeleton w="70%" /></div>)}
       </div>
     );
   }
   if (data.length === 0) {
-    return <div class="card p-6 text-center text-hint text-sm">{empty}</div>;
+    return <div class="card-raised p-6 text-center text-hint text-sm">{empty}</div>;
   }
-  return <div class="card divide-y divide-border">{data.map(render)}</div>;
+  return <div class="card-raised divide-hairline">{data.map(render)}</div>;
 }

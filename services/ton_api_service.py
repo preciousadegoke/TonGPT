@@ -392,11 +392,25 @@ class TonApiService:
             params={"ids": self.coingecko_id, "vs_currencies": "usd"},
         )
         resp.raise_for_status()
-        price = resp.json()[self.coingecko_id]["usd"]
-        if not isinstance(price, (int, float)) or price <= 0:
-            raise ValueError(f"Invalid TON price: {price}")
-        self._price_cache = {"price": float(price), "ts": now}
-        return float(price)
+        raw = resp.json()[self.coingecko_id]["usd"]
+        if not isinstance(raw, (int, float)) or raw <= 0:
+            raise ValueError(f"Invalid TON price: {raw}")
+        price = float(raw)
+
+        # SEC-002: sanity-bound the price before it's used for PAYMENT validation.
+        # 1) Absolute band — reject values outside a plausible TON/USD range so a
+        #    glitched/manipulated feed (e.g. $0.0001 or $9999) can't poison checks.
+        lo = _f("TON_PRICE_MIN_USD", 0.10)
+        hi = _f("TON_PRICE_MAX_USD", 100.0)
+        if not (lo <= price <= hi):
+            raise ValueError(f"TON price {price} outside sane band [{lo}, {hi}] — refusing for payment use")
+        # 2) Relative guard — reject a sudden >5x jump from the last good price.
+        last = self._price_cache.get("price")
+        if last and (price > last * 5 or price < last / 5):
+            raise ValueError(f"TON price {price} deviates >5x from last {last} — refusing (possible manipulation)")
+
+        self._price_cache = {"price": price, "ts": now}
+        return price
 
     async def get_ton_price_best_effort(self) -> float:
         """Non-strict price for display/estimates. Returns last known or 0.0,

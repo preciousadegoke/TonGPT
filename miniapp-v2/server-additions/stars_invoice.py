@@ -52,8 +52,9 @@ async def create_stars_invoice(request: Request, body: dict):
     if bot is None:
         raise HTTPException(status_code=503, detail="Bot not ready")
 
-    # 3. Create the invoice link. amount is in the smallest unit (Stars * 100 is
-    #    what your send_invoice path uses; keep it identical for consistency).
+    # 3. Create the invoice link. For XTR the amount is the WHOLE number of Stars
+    #    — NOT ×100 (Stars have no subunit; see core/pricing.py XTR rule). This is
+    #    identical to the bot's send_invoice path so both charge the same.
     try:
         invoice_url = await bot.create_invoice_link(
             title=f"TonGPT {plan['name']}",
@@ -61,7 +62,7 @@ async def create_stars_invoice(request: Request, body: dict):
             payload=f"premium_{plan_key}",          # ← matches existing handlers
             provider_token="",                       # ← REQUIRED empty for XTR/Stars
             currency="XTR",
-            prices=[LabeledPrice(label=plan["name"], amount=plan["price_stars"] * 100)],
+            prices=[LabeledPrice(label=plan["name"], amount=plan["price_stars"])],
         )
     except Exception as e:                           # noqa: BLE001
         logger.error(f"create_stars_invoice failed for {plan_key}: {e}")

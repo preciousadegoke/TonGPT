@@ -1,45 +1,144 @@
+/* @import must precede all other rules (CSS spec) — theme tokens load first. */
+@import './theme.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@import './theme.css';
-
 @layer components {
+  /* ── Surfaces ─────────────────────────────────────────────────────────── */
   .card {
-    @apply rounded-2xl border border-border bg-surface;
+    @apply rounded-2xl border bg-surface;
+    border-color: var(--border);
   }
+  /* Elevated card — subtle top-light gradient + soft shadow for depth */
+  .card-raised {
+    @apply rounded-2xl border;
+    border-color: var(--border);
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--text) 3%, transparent), transparent 40%),
+      var(--surface);
+    box-shadow: var(--shadow-md);
+  }
+  /* Hairline inset for grouped rows */
+  .divide-hairline > * + * {
+    border-top: 1px solid var(--hairline);
+  }
+
+  /* ── Buttons ──────────────────────────────────────────────────────────── */
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-xl font-semibold
-      transition-transform active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none;
+      transition-all duration-200 active:scale-[0.97]
+      disabled:opacity-50 disabled:pointer-events-none select-none;
+    transition-timing-function: var(--ease-spring);
   }
   .btn-primary {
-    @apply btn bg-accent text-accent-fg px-4 py-3;
+    @apply btn text-accent-fg px-4 py-3;
+    background: var(--accent-grad);
+    box-shadow: var(--shadow-accent);
+  }
+  .btn-primary:active {
+    box-shadow: var(--shadow-sm);
   }
   .btn-ghost {
-    @apply btn bg-surface-2 text-text px-4 py-3;
+    @apply btn px-4 py-3;
+    background: var(--surface-2);
+    color: var(--text);
   }
+  .btn-outline {
+    @apply btn px-4 py-3 border bg-transparent;
+    border-color: var(--border-strong);
+    color: var(--text);
+  }
+
+  /* ── Segmented control ────────────────────────────────────────────────── */
+  .segmented {
+    @apply relative grid p-1 rounded-2xl;
+    background: var(--surface-2);
+  }
+  .segmented-thumb {
+    @apply absolute top-1 bottom-1 rounded-xl;
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+    transition: transform 0.32s var(--ease-spring), width 0.32s var(--ease-spring);
+    border: 1px solid var(--border);
+  }
+
+  /* ── Chips / badges ───────────────────────────────────────────────────── */
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold;
+    background: var(--surface-2);
+    color: var(--hint);
+  }
+  .chip-accent {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
   /* Honour Telegram bottom safe area + tab bar */
   .screen {
-    @apply px-4 pt-3 animate-fade-in;
-    padding-bottom: calc(88px + var(--tg-bottom));
+    @apply px-4 pt-3;
+    padding-bottom: calc(92px + var(--tg-bottom));
+    animation: screen-in 0.4s var(--ease-out) both;
   }
 }
 
 @layer utilities {
-  /* Diagonal sheen overlay for highlighted cards. Add `.sheen` to a relative,
-     overflow-hidden element; the ::after sweeps once on mount + on hover. */
+  /* Pressable — unified tactile press for any interactive surface */
+  .pressable {
+    @apply transition-transform duration-200 active:scale-[0.98];
+    transition-timing-function: var(--ease-spring);
+  }
+
+  /* Elevation helpers bound to tokens */
+  .shadow-soft { box-shadow: var(--shadow-md); }
+  .shadow-float { box-shadow: var(--shadow-lg); }
+
+  /* Gradient text for hero accents */
+  .text-gradient {
+    background: linear-gradient(120deg, var(--text), color-mix(in srgb, var(--text) 55%, var(--accent)));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .text-gradient-accent {
+    background: var(--accent-grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Glass chrome for sticky bars */
+  .glass {
+    background: var(--glass);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+  }
+
+  /* Conic/radial accent glow behind hero elements */
+  .aura::before {
+    content: '';
+    position: absolute;
+    inset: -40% -20% auto -20%;
+    height: 70%;
+    background: radial-gradient(60% 100% at 50% 0%, var(--accent-soft), transparent 70%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* Diagonal sheen overlay for highlighted cards */
   .sheen::after {
     content: '';
     position: absolute;
     inset: 0;
     background: linear-gradient(
       105deg,
-      transparent 30%,
-      rgba(255, 255, 255, 0.10) 45%,
-      transparent 60%
+      transparent 35%,
+      color-mix(in srgb, white 12%, transparent) 48%,
+      transparent 62%
     );
     transform: translateX(-120%);
-    animation: sheen 2.6s ease-in-out 0.4s 1;
+    animation: sheen 2.8s ease-in-out 0.5s 1;
     pointer-events: none;
   }
   @keyframes sheen {
@@ -47,7 +146,23 @@
     100% { transform: translateX(220%); }
   }
 
-  /* Vertical scroll-snap for horizontally scrolling rows (e.g. proof chips). */
+  @keyframes screen-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* In-view reveal — JS toggles [data-reveal] → [data-revealed] */
+  [data-reveal] {
+    opacity: 0;
+    transform: translateY(16px);
+    transition: opacity 0.6s var(--ease-out), transform 0.6s var(--ease-out);
+    will-change: opacity, transform;
+  }
+  [data-reveal][data-revealed] {
+    opacity: 1;
+    transform: none;
+  }
+
   .no-scrollbar::-webkit-scrollbar { display: none; }
   .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 

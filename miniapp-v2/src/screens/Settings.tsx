@@ -1,6 +1,7 @@
 import { useState } from 'preact/hooks';
 import { useLocation } from 'preact-iso';
 import { ScreenHeader } from '@/components/layout/ScreenHeader';
+import { Icon } from '@/components/ui/Icon';
 import { user, currentPlan, isPremium, ui, toast } from '@/store';
 import { getReferralToken } from '@/lib/user';
 import { tgUser, openTelegramLink, haptic } from '@/lib/telegram';
@@ -32,7 +33,7 @@ export default function Settings() {
       <ScreenHeader title="Profile" />
 
       {/* Identity */}
-      <section class="card p-5 flex items-center gap-4">
+      <section class="card-raised p-5 flex items-center gap-4">
         {tgUser?.photo_url ? (
           <img src={tgUser.photo_url} alt="" class="w-14 h-14 rounded-full object-cover" />
         ) : (
@@ -47,7 +48,7 @@ export default function Settings() {
       </section>
 
       {/* Subscription */}
-      <section class="card p-5">
+      <section class="card-raised p-5">
         <div class="flex items-center justify-between">
           <div>
             <p class="text-hint text-xs uppercase tracking-wider">Subscription</p>
@@ -65,14 +66,14 @@ export default function Settings() {
       </section>
 
       {/* Actions */}
-      <section class="card divide-y divide-border">
+      <section class="card-raised divide-hairline overflow-hidden">
         <RowButton icon="🎁" label="Invite & earn" hint="Share your referral link" onClick={shareReferral} busy={refBusy} />
         <RowButton icon="👛" label="Wallet" hint="Manage connection" onClick={() => route('/wallet')} />
         <RowButton icon="🎨" label="Theme" hint={ui.colorScheme.value === 'dark' ? 'Synced · Dark' : 'Synced · Light'} />
       </section>
 
       {/* Legal */}
-      <section class="card divide-y divide-border">
+      <section class="card-raised divide-hairline overflow-hidden">
         <RowButton icon="📜" label="Terms of Service" onClick={() => openTelegramLink(`https://t.me/${env.botUsername}?start=terms`)} />
         <RowButton icon="🔒" label="Privacy Policy" onClick={() => openTelegramLink(`https://t.me/${env.botUsername}?start=privacy`)} />
       </section>
@@ -92,7 +93,7 @@ function RowButton({
         <p class="font-semibold text-sm">{label}</p>
         {hint && <p class="text-hint text-xs">{hint}</p>}
       </div>
-      <span class="text-hint">{busy ? '…' : '›'}</span>
+      {busy ? <span class="text-hint">…</span> : <Icon name="chevron-right" size={16} class="text-hint" />}
     </button>
   );
 }

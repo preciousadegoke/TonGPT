@@ -169,10 +169,26 @@ class SecurityManager:
         return f"rate_limit:{user_id}:{endpoint}"
     
     def validate_ton_address(self, address: str) -> bool:
-        """Validate TON wallet address format using CRC16 checksum."""
+        """Validate a TON address in EITHER friendly (EQ../UQ..) or raw (wc:hex) form.
+
+        AUTH-004 fix: TON Connect delivers RAW addresses (``0:<hex>``) while users
+        paste FRIENDLY ones (``EQ..``/``UQ..``). The old implementation only
+        accepted friendly base64, so it 400'd every raw address coming out of the
+        wallet — breaking the linking happy path. We now accept both by parsing
+        through tonsdk's Address (which validates the CRC of friendly forms and
+        the structure of raw forms) and fall back to the legacy CRC16 check.
+        """
         if not address:
             return False
-
+        # Primary: tonsdk understands both raw and friendly and validates the CRC.
+        try:
+            from tonsdk.utils import Address
+            Address(address)
+            return True
+        except Exception:
+            pass
+        # Fallback: legacy friendly-only CRC16 check (kept for environments
+        # without tonsdk and for defensive redundancy).
         b64 = address.replace("-", "+").replace("_", "/")
         pad = 4 - len(b64) % 4
         if pad != 4:
@@ -185,6 +201,231 @@ class SecurityManager:
             return False
         expected = struct.unpack(">H", raw[34:])[0]
         return crc16(raw[:34]) == expected
+
+
+# ===========================================================================
+#  TON address format helpers (AUTH-004)
+#  One canonical INTERNAL form: friendly, url-safe, bounceable. Storing and
+#  comparing wallets in this single form stops a raw vs friendly mismatch from
+#  splitting one wallet into "two" identities or breaking the uniqueness check.
+# ===========================================================================
+def to_raw(address: str) -> str:
+    """Return the raw ``wc:hex`` form of any TON address (raw or friendly in)."""
+    from tonsdk.utils import Address
+    return Address(address).to_string(False, False, False)
+
+
+def to_friendly(address: str, *, bounceable: bool = True, testnet: bool = False) -> str:
+    """Return the user-friendly, url-safe form (EQ../UQ..) of any TON address."""
+    from tonsdk.utils import Address
+    return Address(address).to_string(True, True, bounceable, testnet)
+
+
+def normalize_address(address: str, *, testnet: Optional[bool] = None) -> str:
+    """Canonical internal form used for storage + uniqueness comparisons.
+
+    Always friendly + url-safe + bounceable so the SAME wallet always maps to the
+    SAME string regardless of whether it arrived raw or friendly, EQ or UQ.
+    """
+    if testnet is None:
+        testnet = os.getenv("TON_NETWORK", "mainnet").strip().lower() != "mainnet"
+    return to_friendly(address, bounceable=True, testnet=testnet)
+
+
+# ===========================================================================
+#  TON Connect ton_proof verification (AUTH-001)
+#  ---------------------------------------------------------------------------
+#  SECURITY MODEL — why this actually proves ownership:
+#    * The public key is NEVER taken from the client request. It is read from the
+#      wallet's StateInit, which is bound to the address by the TON rule
+#      ``account_address == hash(StateInit)``. An attacker cannot present a
+#      victim's address together with their OWN StateInit (that would require a
+#      SHA-256 collision), so any key we read here belongs to a StateInit that
+#      genuinely hashes to the claimed address.
+#    * The Ed25519 signature is then verified against that StateInit-derived key
+#      over the exact TON Connect message. Success proves the connector holds the
+#      private key committed in the contract that owns the address — real
+#      ownership, not a self-asserted (address, pubkey) pair.
+#  This is what closes the spoofing hole: signing with your own key while
+#  claiming someone else's address now fails, because the signature is checked
+#  against the victim's StateInit key, not your declared one.
+# ===========================================================================
+TON_PROOF_PREFIX = b"ton-proof-item-v2/"
+TON_CONNECT_PREFIX = b"\xff\xffton-connect"
+
+# Candidate bit offsets of the 256-bit public key inside a wallet data cell:
+#   v3R1/R2 and v4R1/R2:  seqno(32) + subwallet_id(32)            = 64
+#   v5 / W5:              flag(1) + seqno(32) + wallet_id(32)     = 65
+# Trying several is SAFE: because the StateInit is hash-bound to the address,
+# only the offset that yields the wallet's real key can verify the signature.
+_PUBKEY_BIT_OFFSETS = (64, 65, 0, 96)
+
+
+def _read_bits(buf: bytes, bit_offset: int, nbits: int) -> bytes:
+    """Read ``nbits`` MSB-first bits starting at ``bit_offset`` from ``buf``."""
+    out = bytearray((nbits + 7) // 8)
+    for i in range(nbits):
+        bi = bit_offset + i
+        if bi // 8 >= len(buf):
+            raise ValueError("state_init data cell too short for a public key")
+        bit = (buf[bi // 8] >> (7 - (bi % 8))) & 1
+        out[i // 8] |= bit << (7 - (i % 8))
+    return bytes(out)
+
+
+def _candidate_pubkeys_from_state_init(state_init_b64: str, address: str):
+    """Parse the StateInit BoC, enforce ``hash(StateInit)==address``, and return
+    candidate 256-bit public keys read from the wallet data cell.
+
+    Raises ValueError if the StateInit does not hash to the claimed address —
+    THIS is the anti-spoof binding.
+    """
+    from tonsdk.boc import Cell
+    from tonsdk.utils import Address
+
+    try:
+        raw = base64.b64decode(state_init_b64)
+        cell = Cell.one_from_boc(raw)
+    except Exception as e:
+        raise ValueError(f"Malformed StateInit BoC: {e}")
+
+    addr = Address(address)
+    if cell.bytes_hash() != addr.hash_part:
+        raise ValueError("StateInit does not hash to the claimed address (binding failed)")
+
+    if not cell.refs:
+        raise ValueError("StateInit has no data cell")
+    data_cell = cell.refs[1] if len(cell.refs) >= 2 else cell.refs[0]
+    buf = bytes(data_cell.bits.get_top_upped_array())
+
+    candidates = []
+    for off in _PUBKEY_BIT_OFFSETS:
+        try:
+            candidates.append(_read_bits(buf, off, 256))
+        except ValueError:
+            continue
+    if not candidates:
+        raise ValueError("Could not read a public key from the StateInit data cell")
+    return candidates
+
+
+def verify_ton_proof(*, address: str, proof: dict, state_init: str,
+                     allowed_domains: Optional[set] = None,
+                     public_key: Optional[str] = None) -> str:
+    """Cryptographically verify a TON Connect ton_proof and bind it to the
+    address via the StateInit. Returns the CANONICAL (friendly) address on
+    success; raises ValueError on ANY failure.
+
+    Args:
+        address:    wallet address (raw or friendly) as claimed by the client.
+        proof:      the TON Connect proof dict (timestamp/domain/signature/payload).
+        state_init: base64 BoC of the wallet StateInit (REQUIRED — the trust anchor).
+        allowed_domains: if provided, proof.domain.value must be in this set.
+        public_key: client-declared key — IGNORED for trust; used only for an
+                    optional log/cross-check. Never trusted as the verifying key.
+    """
+    import nacl.signing
+    import nacl.exceptions
+    from tonsdk.utils import Address
+
+    if not state_init:
+        raise ValueError("StateInit is required to verify wallet ownership")
+
+    # ---- message fields (use the values the wallet actually signed) ----
+    domain = proof.get("domain")
+    if isinstance(domain, dict):
+        domain_value = str(domain.get("value", ""))
+        domain_len = int(domain.get("lengthBytes", len(domain_value.encode("utf-8"))))
+    else:
+        domain_value = str(domain or "")
+        domain_len = len(domain_value.encode("utf-8"))
+
+    if allowed_domains and domain_value not in allowed_domains:
+        raise ValueError(f"proof domain not allowed: {domain_value!r}")
+
+    ts = int(proof["timestamp"])
+    payload_nonce = str(proof.get("payload", ""))
+    try:
+        signature = base64.b64decode(proof["signature"])
+    except Exception:
+        raise ValueError("signature is not valid base64")
+
+    addr = Address(address)
+    wc_bytes = int(addr.wc).to_bytes(4, "big", signed=True)
+    addr_hash = addr.hash_part
+
+    message = (
+        TON_PROOF_PREFIX
+        + wc_bytes
+        + addr_hash
+        + domain_len.to_bytes(4, "little")
+        + domain_value.encode("utf-8")
+        + ts.to_bytes(8, "little")
+        + payload_nonce.encode("utf-8")
+    )
+    full_msg = hashlib.sha256(TON_CONNECT_PREFIX + hashlib.sha256(message).digest()).digest()
+
+    # The verifying key comes ONLY from the StateInit (hash-bound to the address).
+    candidates = _candidate_pubkeys_from_state_init(state_init, address)
+    for pk in candidates:
+        try:
+            nacl.signing.VerifyKey(pk).verify(full_msg, signature)
+        except nacl.exceptions.BadSignatureError:
+            continue
+        # Optional, non-authoritative cross-check for observability only.
+        if public_key:
+            try:
+                declared = bytes.fromhex(public_key.removeprefix("0x"))
+                if declared != pk:
+                    logger.warning("ton_proof: client public_key != StateInit key (ignored)")
+            except ValueError:
+                pass
+        return normalize_address(address)
+
+    raise ValueError("ton_proof signature did not verify against the StateInit key")
+
+
+# ===========================================================================
+#  Engine wallet-link assertion (ENG-001)
+#  Replaces the "VERIFIED_BY_PYTHON_SERVER" magic string. After a real proof,
+#  this server mints a short-lived HMAC token bound to (telegram_id, address).
+#  The Engine validates the HMAC with the SAME secret, so a holder of
+#  ENGINE_API_KEY alone — without WALLET_LINK_SIGNING_SECRET — cannot forge a
+#  wallet link. Token shape (pipe-delimited, base64-free, trivial to parse in C#):
+#       v1|<telegram_id>|<friendly_address>|<exp_unix>|<nonce>|<hmac_hex>
+#  where hmac = HMAC_SHA256(secret, "v1|<tg>|<addr>|<exp>|<nonce>").
+# ===========================================================================
+def make_wallet_link_assertion(telegram_id, friendly_address: str, *, ttl_seconds: int = 60) -> str:
+    secret = os.getenv("WALLET_LINK_SIGNING_SECRET", "")
+    if not secret:
+        raise RuntimeError("WALLET_LINK_SIGNING_SECRET is not set — cannot mint wallet-link assertion")
+    exp = int(time.time()) + int(ttl_seconds)
+    nonce = secrets.token_hex(8)
+    body = f"v1|{telegram_id}|{friendly_address}|{exp}|{nonce}"
+    sig = hmac.new(secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{body}|{sig}"
+
+
+# ===========================================================================
+#  Sensitive user-action assertion (SEC-001)
+#  Binds a privileged per-user action (GDPR export / erasure) to a specific
+#  telegram_id with a short-lived HMAC, using the SAME shared secret as the
+#  wallet assertion. The Engine requires this, so a holder of ENGINE_API_KEY
+#  alone — without WALLET_LINK_SIGNING_SECRET — cannot export or delete an
+#  arbitrary user's data. Format (the ``action`` namespaces it away from the
+#  wallet token so the two can never be confused):
+#       ua1|<action>|<telegram_id>|<exp_unix>|<nonce>|<hmac_hex>
+# ===========================================================================
+def make_user_action_assertion(telegram_id, action: str, *, ttl_seconds: int = 60) -> str:
+    secret = os.getenv("WALLET_LINK_SIGNING_SECRET", "")
+    if not secret:
+        raise RuntimeError("WALLET_LINK_SIGNING_SECRET is not set — cannot mint user-action assertion")
+    exp = int(time.time()) + int(ttl_seconds)
+    nonce = secrets.token_hex(8)
+    body = f"ua1|{action}|{telegram_id}|{exp}|{nonce}"
+    sig = hmac.new(secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{body}|{sig}"
+
 
 # Global security manager instance
 security_manager = SecurityManager()

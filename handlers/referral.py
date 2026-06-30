@@ -32,20 +32,30 @@ def _redis():
 
 async def record_referral_source(new_user_id: int, referrer_id: int):
     """Store the referral relationship when a new user /start's with a ref code.
-    
-    Does NOT immediately credit the referrer — the credit is deferred until
-    the referred user passes the sybil checks (see validate_pending_referral).
+
+    Does NOT immediately credit the referrer — the credit is deferred until the
+    referred user passes the anti-sybil checks (see validate_pending_referral).
     """
     rc = _redis()
     if not rc:
         return
+    # REF-003: a user cannot refer themselves.
+    if int(new_user_id) == int(referrer_id):
+        logger.warning(f"Rejected self-referral for user {new_user_id}")
+        return
     try:
-        # Only record if this user hasn't already been referred
-        if rc.get(f"referred_by:{new_user_id}"):
-            return
-        rc.set(f"referred_by:{new_user_id}", str(referrer_id))
+        # Atomic claim: SET NX so a user can be referred by exactly one referrer,
+        # with no get-then-set race. Falls back to the raw client for NX support.
+        raw = getattr(rc, "client", None)
+        if raw is not None:
+            claimed = raw.set(f"referred_by:{new_user_id}", str(referrer_id), nx=True)
+            if not claimed:
+                return  # already referred
+        else:
+            if rc.get(f"referred_by:{new_user_id}"):
+                return
+            rc.set(f"referred_by:{new_user_id}", str(referrer_id))
         rc.set(f"ref_join_ts:{new_user_id}", str(int(time.time())))
-        # Track pending referral for the referrer
         rc.sadd(f"pending_referrals:{referrer_id}", str(new_user_id))
         logger.info(f"Recorded pending referral: user {new_user_id} referred by {referrer_id}")
     except Exception as e:
@@ -90,19 +100,37 @@ async def validate_pending_referral(user_id: int):
         join_ts = int(join_ts)
         if (int(time.time()) - join_ts) < REFERRAL_MIN_AGE_SECONDS:
             return  # Too new
-        
-        # Check command count threshold
+
+        # REF-001: require a REAL, hard-to-sybil signal — a cryptographically
+        # verified linked wallet (see AUTH-001) — instead of the old command
+        # count, which a throwaway account fully controls. This raises the cost
+        # of farming free rewards from disposable accounts.
+        try:
+            from services.engine_client import engine_client
+            user = await engine_client.get_user(user_id)
+        except Exception:
+            user = None
+        has_wallet = bool(user and user.get("walletAddress"))
+        if not has_wallet:
+            return  # not a verified-enough referral yet
+
+        # Also keep the lightweight activity floor as a secondary gate.
         cmd_count = rc.get(f"ref_cmd_count:{user_id}")
         cmd_count = int(cmd_count) if cmd_count else 0
         if cmd_count < REFERRAL_MIN_COMMANDS:
             return  # Not enough activity
-        
-        # ── Sybil checks passed — credit the referrer ──
+
+        # ── Anti-sybil checks passed — credit the referrer's COUNTER ──
+        # NOTE: this counter is a metric only. It does NOT itself grant a plan.
+        # Any plan reward must be applied through the validated, amount-checked
+        # activation path (engine Payment/complete) or an audited admin action —
+        # never auto-granted from this counter — so a gamed counter cannot mint
+        # a free subscription.
         rc.incr(f"referrals:{referrer_id}")
         rc.set(f"ref_validated:{user_id}", "1")
         rc.srem(f"pending_referrals:{referrer_id}", str(user_id))
-        
-        logger.info(f"Referral validated: user {user_id} credited to referrer {referrer_id}")
+
+        logger.info(f"Referral validated (wallet-linked): user {user_id} credited to referrer {referrer_id}")
         
     except Exception as e:
         logger.error(f"Referral validation error: {e}")

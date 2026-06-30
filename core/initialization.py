@@ -90,15 +90,26 @@ async def test_connections(config: Dict[str, Any]) -> None:
     except Exception as e:
         logger.error(f"❌ TON API test error: {e}")
 
+# INIT-001: guard so a RETRIED initialize_all_services() (the on_startup retry
+# loop) can never spawn a second copy of these background tasks.
+_bg_tasks_started = False
+
+
 async def start_background_tasks(services: Dict[str, Any]) -> None:
-    """Start all background monitoring tasks"""
+    """Start all background monitoring tasks (idempotent)."""
+    global _bg_tasks_started
+    if _bg_tasks_started:
+        logger.info("Background tasks already started — skipping duplicate start (INIT-001).")
+        return
+    _bg_tasks_started = True
+
     X_monitor = services.get('X_monitor')
-    
+
     # Start X monitoring
     if X_monitor:
         logger.info("🐦 Starting X monitoring service...")
         asyncio.create_task(X_monitor.enhanced_monitoring_cycle())
-    
+
     # Start wallet monitoring (blockchain.py) when Redis is available
     try:
         from utils.redis_conn import redis_client
@@ -116,7 +127,7 @@ async def start_background_tasks(services: Dict[str, Any]) -> None:
         asyncio.create_task(notification_cleanup_loop(retention_days=retention_days))
         logger.info("🧹 Notification cleanup loop started")
     except Exception as e:
-        logger.warning("⚠ Wallet monitoring not started: %s", e)
+        logger.warning("⚠ Notification cleanup not started: %s", e)  # INIT-002: correct message
 
 async def initialize_all_services(config: Dict[str, Any]) -> Dict[str, Any]:
     """Initialize all services and return service instances"""

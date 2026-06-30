@@ -2,6 +2,9 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TonGPT.Engine.Data;
 using TonGPT.Engine.Models;
+using System;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace TonGPT.Engine.Controllers
@@ -11,10 +14,48 @@ namespace TonGPT.Engine.Controllers
     public class UserController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly IConfiguration _config;
+        private readonly ILogger<UserController> _logger;
 
-        public UserController(AppDbContext context)
+        public UserController(AppDbContext context, IConfiguration config, ILogger<UserController> logger)
         {
             _context = context;
+            _config = config;
+            _logger = logger;
+        }
+
+        // SEC-001: validate the per-user assertion for sensitive GDPR actions.
+        // Token shape: ua1|<action>|<telegramId>|<exp>|<nonce>|<hmacHex>, signed
+        // with WALLET_LINK_SIGNING_SECRET (the SAME secret as wallet linking).
+        // If the secret is configured we REQUIRE a valid, action+id-bound token,
+        // so a leaked API key alone cannot export/erase arbitrary users. If the
+        // secret is not configured we log a warning and allow (so existing
+        // deployments are not broken) — set the secret to enable enforcement.
+        private bool UserAssertionOk(string action, string telegramId)
+        {
+            var secret = _config["WalletLinkSigningSecret"]
+                         ?? Environment.GetEnvironmentVariable("WALLET_LINK_SIGNING_SECRET");
+            if (string.IsNullOrEmpty(secret))
+            {
+                _logger.LogWarning("WALLET_LINK_SIGNING_SECRET not set — {Action} for {Id} allowed WITHOUT per-user assertion (SEC-001 enforcement disabled).", action, telegramId);
+                return true;
+            }
+
+            var token = Request.Headers["X-User-Assertion"].ToString();
+            if (string.IsNullOrEmpty(token)) { _logger.LogWarning("Missing X-User-Assertion for {Action} {Id}", action, telegramId); return false; }
+
+            var parts = token.Split('|');
+            if (parts.Length != 6 || parts[0] != "ua1") return false;
+            var body = string.Join("|", parts[0], parts[1], parts[2], parts[3], parts[4]);
+            byte[] expected;
+            using (var h = new HMACSHA256(Encoding.UTF8.GetBytes(secret)))
+                expected = h.ComputeHash(Encoding.UTF8.GetBytes(body));
+            byte[] provided;
+            try { provided = Convert.FromHexString(parts[5]); } catch { return false; }
+            if (provided.Length != expected.Length || !CryptographicOperations.FixedTimeEquals(provided, expected)) return false;
+            if (!long.TryParse(parts[3], out var exp) || DateTimeOffset.UtcNow.ToUnixTimeSeconds() > exp) return false;
+            // Must be for THIS action and THIS user.
+            return parts[1] == action && parts[2] == telegramId;
         }
 
         public class UserSyncDto
@@ -113,6 +154,9 @@ namespace TonGPT.Engine.Controllers
         [HttpGet("export/{telegramId}")]
         public async Task<IActionResult> ExportData(string telegramId)
         {
+            if (!UserAssertionOk("export", telegramId))
+                return StatusCode(403, new { message = "Per-user authorization required." });
+
             var user = await _context.Users.FirstOrDefaultAsync(u => u.TelegramId == telegramId);
             if (user == null)
                 return NotFound(new { message = "User not found" });
@@ -151,6 +195,9 @@ namespace TonGPT.Engine.Controllers
         [HttpDelete("data/{telegramId}")]
         public async Task<IActionResult> DeleteUserData(string telegramId)
         {
+            if (!UserAssertionOk("delete", telegramId))
+                return StatusCode(403, new { message = "Per-user authorization required." });
+
             var user = await _context.Users.FirstOrDefaultAsync(u => u.TelegramId == telegramId);
             if (user == null)
                 return NotFound(new { message = "User not found" });

@@ -47,5 +47,10 @@ yarn-error.log*
 *.swp
 *.tmp
 *.tar
+*.tar.*
 .tmp-*
 build/
+
+# 🧰 Misc local artifacts (were committed by accident — git rm --cached once)
+_perm_test
+tongpt_tree.txt

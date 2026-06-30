@@ -1,4 +1,6 @@
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
+using System.Threading.RateLimiting;
 using TonGPT.Engine.Data;
 using TonGPT.Engine.Middleware;
 using TonGPT.Engine.Services;
@@ -13,6 +15,35 @@ builder.Services.AddHttpClient();
 builder.Services.AddHostedService<SubscriptionWorker>();
 builder.Services.AddHostedService<ChatRetentionJob>();
 
+// ARCH-002: rate limiting. A per-IP fixed window throttles brute-force against
+// the single API key and blunts DoS. Tunable via RateLimit:* config.
+var rlPermit = builder.Configuration.GetValue<int>("RateLimit:PermitPerMinute", 120);
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+    {
+        var ip = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        return RateLimitPartition.GetFixedWindowLimiter(ip, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = rlPermit,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+        });
+    });
+});
+
+// ARCH-001: honor X-Forwarded-Proto/For so the app sees the real client scheme
+// when running behind a TLS-terminating proxy (the common deployment).
+builder.Services.Configure<ForwardedHeadersOptions>(o =>
+{
+    o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    // Proxies are trusted by the deployment; clear the default safe-list so the
+    // forwarded headers from the edge proxy are honored.
+    o.KnownNetworks.Clear();
+    o.KnownProxies.Clear();
+});
+
 // Database Context
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
@@ -26,6 +57,34 @@ if (string.IsNullOrWhiteSpace(connectionString))
         "Set it via environment variable: ConnectionStrings__DefaultConnection"
     );
 
+app.UseForwardedHeaders();
+
+// ARCH-001: in production, enforce HSTS and (optionally) redirect to HTTPS so the
+// API key never travels in cleartext. HTTPS redirect is on by default but can be
+// disabled (Security:RequireHttpsRedirect=false) for setups where the edge proxy
+// already guarantees TLS and a redirect would loop.
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+    if (app.Configuration.GetValue("Security:RequireHttpsRedirect", true))
+        app.UseHttpsRedirection();
+
+    // Loud, throttled warning if a production request still arrives over plain
+    // HTTP (e.g. proxy not setting X-Forwarded-Proto) — the API key is exposed.
+    app.Use(async (context, next) =>
+    {
+        if (!context.Request.IsHttps &&
+            !string.Equals(context.Request.Headers["X-Forwarded-Proto"], "https", StringComparison.OrdinalIgnoreCase))
+        {
+            app.Logger.LogWarning(
+                "Request received over plain HTTP in production from {Ip} to {Path}. " +
+                "The API key may be exposed in transit — terminate TLS at the edge.",
+                context.Connection.RemoteIpAddress, context.Request.Path);
+        }
+        await next();
+    });
+}
+
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
@@ -33,7 +92,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-// app.UseHttpsRedirection();
+// Rate limiting runs BEFORE auth so unauthenticated brute-force is throttled too.
+app.UseRateLimiter();
 app.UseMiddleware<ApiKeyMiddleware>();
 app.UseAuthorization();
 

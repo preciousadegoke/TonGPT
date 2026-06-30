@@ -18,88 +18,27 @@ namespace TonGPT.Engine.Controllers
             _logger = logger;
         }
 
-        public class RecordPaymentRequest
-        {
-            public required string TelegramId { get; set; }
-            public required string Plan { get; set; }
-            public required string Provider { get; set; }
-            public string? ExternalId { get; set; }
-        }
-
-        /// <summary>
-        /// Record a completed payment (e.g. after Telegram Stars success). Call this before Subscription/upgrade.
-        /// Returns the Payment Id to pass as paymentRecordId when upgrading.
-        /// </summary>
-        [HttpPost("record")]
-        public async Task<IActionResult> Record([FromBody] RecordPaymentRequest request)
-        {
-            if (!string.IsNullOrEmpty(request.ExternalId) && await _context.Payments.AnyAsync(p => p.ExternalId == request.ExternalId && p.Provider == request.Provider))
-            {
-                var existing = await _context.Payments.FirstAsync(p => p.ExternalId == request.ExternalId && p.Provider == request.Provider);
-                _logger.LogInformation("Duplicate payment payload received for ExternalId {ExternalId}. Returning existing PaymentId.", request.ExternalId);
-                return Ok(new { paymentId = existing.Id, status = "Already Recorded" });
-            }
-
-            var payment = new Payment
-            {
-                Id = Guid.NewGuid(),
-                TelegramUserId = request.TelegramId,
-                AmountTon = 0,
-                TransactionHash = request.ExternalId,
-                Status = "Completed",
-                Plan = request.Plan,
-                Provider = request.Provider,
-                ExternalId = request.ExternalId,
-                CreatedAt = DateTime.UtcNow
-            };
-
-            _context.Payments.Add(payment);
-
-            try
-            {
-                await _context.SaveChangesAsync();
-            }
-            catch (DbUpdateException)
-            {
-                // Unique index violation — concurrent duplicate arrived between AnyAsync check and insert
-                _context.Entry(payment).State = Microsoft.EntityFrameworkCore.EntityState.Detached;
-                if (!string.IsNullOrEmpty(request.ExternalId))
-                {
-                    var existing = await _context.Payments.FirstOrDefaultAsync(p => p.ExternalId == request.ExternalId && p.Provider == request.Provider);
-                    if (existing != null)
-                    {
-                        _logger.LogInformation("Concurrent duplicate resolved for ExternalId {ExternalId}.", request.ExternalId);
-                        return Ok(new { paymentId = existing.Id, status = "Already Recorded" });
-                    }
-                }
-                throw; // Re-throw if it's a different DB error
-            }
-
-            _logger.LogInformation("Payment recorded: {PaymentId} for plan {Plan} via {Provider}",
-                payment.Id, request.Plan, request.Provider);
-
-            return Ok(new { paymentId = payment.Id, status = "Recorded" });
-        }
-
         // ================================================================
-        // ATOMIC RECORD + ACTIVATE (P0 reliability fix)
+        // ATOMIC RECORD + ACTIVATE — the ONE canonical activation path.
         // ----------------------------------------------------------------
         // Records the payment AND activates the subscription in ONE database
         // transaction. The unique index on (ExternalId, Provider) is the single
         // idempotency authority: a replayed webhook can never double-activate.
         //
-        // This is the canonical path used by the bot's successful_payment
-        // handler. It replaces the old Redis-based idempotency claim, which
-        // could lose a paid activation whenever Redis was down.
+        // The Engine validates the PAID AMOUNT against the canonical price here
+        // (PAY-001), so activation can never be granted for free or underpayment
+        // — even by a direct caller holding the API key. The old amount-blind
+        // /record + /Subscription/upgrade endpoints have been removed.
         // ================================================================
         public class CompletePaymentRequest
         {
             public required string TelegramId { get; set; }
             public required string Plan { get; set; }       // engine plan name: Starter/Pro/ProPlus/Elite
-            public required string Provider { get; set; }   // e.g. telegram_stars
-            public string? ExternalId { get; set; }         // Telegram charge id (idempotency key)
+            public required string Provider { get; set; }   // "ton" | "ton_manual" | "telegram_stars"
+            public string? ExternalId { get; set; }         // provider charge/tx id (idempotency key)
             public int DurationDays { get; set; } = 30;
-            public decimal AmountTon { get; set; } = 0m;
+            public decimal AmountTon { get; set; } = 0m;    // paid TON (for ton* providers)
+            public long AmountStars { get; set; } = 0;      // paid Stars (for telegram_stars)
         }
 
         [HttpPost("complete")]
@@ -112,8 +51,16 @@ namespace TonGPT.Engine.Controllers
                 return BadRequest(new { message = "TelegramId, Plan and Provider are required." });
             }
 
-            // Reject unknown plans up front (4xx => caller will NOT retry/queue).
+            // ExternalId is the idempotency key — REQUIRED for paid activations so a
+            // missing id can never bypass dedup (PAY-005/PAY-006).
+            if (string.IsNullOrEmpty(request.ExternalId))
+            {
+                return BadRequest(new { message = "ExternalId is required." });
+            }
+
+            // Reject unknown / numeric / Free plans up front (4xx => no retry/queue).
             if (!Enum.TryParse<SubscriptionPlan>(request.Plan, ignoreCase: true, out var plan)
+                || !Enum.IsDefined(typeof(SubscriptionPlan), plan)
                 || plan == SubscriptionPlan.Free)
             {
                 return BadRequest(new { message = $"Invalid plan: {request.Plan}" });
@@ -123,7 +70,8 @@ namespace TonGPT.Engine.Controllers
             var now = DateTime.UtcNow;
 
             // ---- Fast idempotency pre-check (cheap, avoids building state) ----
-            if (!string.IsNullOrEmpty(request.ExternalId))
+            // Done BEFORE amount validation so a legitimate retry of an
+            // already-activated payment always returns success.
             {
                 var dup = await _context.Payments.FirstOrDefaultAsync(
                     p => p.ExternalId == request.ExternalId && p.Provider == request.Provider);
@@ -142,6 +90,43 @@ namespace TonGPT.Engine.Controllers
                         expiry = existingUser?.SubscriptionExpiry
                     });
                 }
+            }
+
+            // ---- Authoritative amount validation (PAY-001) ----
+            // The ENGINE — not the caller — decides whether enough was paid, using
+            // the canonical core/pricing.py values mirrored in Pricing.cs. This is a
+            // NEW payment (not a duplicate), so an underpayment is a hard 4xx the
+            // caller must not retry. Returns 4xx => engine_client treats it as
+            // permanent (no queue), so a genuine underpayment is surfaced, not looped.
+            if (!Pricing.TryGet(plan, out var price))
+            {
+                return BadRequest(new { message = $"No price configured for plan {plan}." });
+            }
+            var provider = request.Provider.Trim().ToLowerInvariant();
+            if (provider == "telegram_stars")
+            {
+                if (request.AmountStars < price.Stars)
+                {
+                    _logger.LogWarning("Underpaid Stars: user {TelegramId} paid {Paid} < {Expected} for {Plan}",
+                        request.TelegramId, request.AmountStars, price.Stars, plan);
+                    return BadRequest(new { message = $"Underpayment: {request.AmountStars} < {price.Stars} Stars." });
+                }
+            }
+            else if (provider == "ton" || provider == "ton_manual")
+            {
+                // Accept overpayment; allow a small tolerance under to match the
+                // on-chain monitor so we never reject a transfer it already accepted.
+                if (request.AmountTon < price.Ton * (1m - Pricing.TonTolerance))
+                {
+                    _logger.LogWarning("Underpaid TON: user {TelegramId} paid {Paid} < {Expected} for {Plan}",
+                        request.TelegramId, request.AmountTon, price.Ton, plan);
+                    return BadRequest(new { message = $"Underpayment: {request.AmountTon} < {price.Ton} TON." });
+                }
+            }
+            else
+            {
+                // Fail closed on any provider we can't price-check.
+                return BadRequest(new { message = $"Unknown payment provider: {request.Provider}." });
             }
 
             // ---- Build payment + activation, commit atomically ----

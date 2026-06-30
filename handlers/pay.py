@@ -8,7 +8,6 @@ import time
 import httpx
 from services.engine_client import engine_client
 from utils.redis_conn import redis_client
-from services.tonapi import get_ton_price_usd
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -22,36 +21,80 @@ TONCENTER_BASE_URL = "https://testnet.toncenter.com/api/v2"
 
 # Pricing is defined in ONE place — core/pricing.py — and imported everywhere
 # (pay.py, services/ton_payments.py, the docs) so the numbers can never drift.
-from core.pricing import PLANS, PLAN_PRICES_USD  # canonical single source of truth
+# expected_stars()/expected_nanoton() are the canonical per-tier amounts.
+from core.pricing import PLANS, expected_stars, expected_nanoton  # single source of truth
 
 
 async def validate_payment_amount(
     invoice_payload: str, total_amount: int, currency: str
 ) -> str:
+    """Validate a paid invoice against the canonical price for its plan.
+
+    ``total_amount`` is whatever Telegram reports in ``successful_payment``:
+      * currency == "XTR": the WHOLE number of Stars (no subunit) → compare to
+        ``expected_stars`` directly. (The previous USD-estimate math here was a
+        no-op because of the ×100 invoice bug — see core/pricing.py XTR rule.)
+      * currency == "TON": Telegram-native TON amount in nanoton (smallest unit)
+        → compare to ``expected_nanoton``.
+    Raises ValueError on an unknown plan, unsupported currency, or underpayment.
+    """
     plan_key = invoice_payload
-    if plan_key not in PLAN_PRICES_USD:
+    if plan_key not in PLANS:
         raise ValueError(f"Unknown plan: {plan_key}")
 
-    expected_usd = PLAN_PRICES_USD[plan_key]
-
     if currency == "XTR":
-        paid_usd = total_amount * 0.013
+        expected = int(expected_stars(plan_key))
+        if int(total_amount) < expected:
+            raise ValueError(
+                f"Underpayment: paid {total_amount} Stars, expected {expected} Stars"
+            )
     elif currency == "TON":
-        ton_price = await get_ton_price_usd()
-        paid_usd = total_amount * ton_price
+        expected = int(expected_nanoton(plan_key))
+        if int(total_amount) < expected:
+            raise ValueError(
+                f"Underpayment: paid {total_amount} nanoton, expected {expected} nanoton"
+            )
     else:
         raise ValueError(f"Unsupported currency: {currency}")
 
-    if paid_usd < expected_usd * 0.95:   # 5% tolerance
-        raise ValueError(
-            f"Underpayment: paid ${paid_usd:.2f}, expected ${expected_usd:.2f}"
-        )
     return plan_key
+
+
+# Display emoji per tier (presentation only — never a source of price data).
+_PLAN_EMOJI = {"starter": "🥉", "pro": "🥈", "pro_plus": "🥇", "elite": "💎"}
+
+
+def _build_payment_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
+    """Build the plan-selection keyboard with Star prices read from PLANS.
+
+    Button labels are NEVER hardcoded — every price is rendered from
+    core/pricing.py so the displayed amount always equals the invoice amount.
+    """
+    from core.pricing import PLAN_ORDER
+
+    plan_buttons = [
+        types.InlineKeyboardButton(
+            text=f"{_PLAN_EMOJI.get(k, '📦')} {PLANS[k]['name'].replace(' Plan', '')} - {PLANS[k]['price_stars']}⭐",
+            callback_data=f"pay_stars_{k}",
+        )
+        for k in PLAN_ORDER
+    ]
+    rows = [plan_buttons[i:i + 2] for i in range(0, len(plan_buttons), 2)]
+    rows.append([
+        types.InlineKeyboardButton(text="🪙 TON Payment", callback_data="pay_ton"),
+        types.InlineKeyboardButton(text="ℹ️ Plan Details", callback_data="plan_details"),
+    ])
+    rows.append([
+        types.InlineKeyboardButton(text="🎁 Referrals", callback_data="referrals"),
+        types.InlineKeyboardButton(text="📊 Check Status", callback_data=f"check_status_{user_id}"),
+    ])
+    return types.InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _activate_with_resilience(
     *, user_id: int, engine_plan: str, provider: str,
     charge_id: str, duration_days: int, plan_key: str,
+    amount_stars: int = 0, amount_ton: float = 0.0,
 ) -> dict:
     """Activate a subscription with Postgres as the single source of truth.
 
@@ -76,6 +119,8 @@ async def _activate_with_resilience(
             provider=provider,
             external_id=charge_id,
             duration_days=duration_days,
+            amount_ton=amount_ton,
+            amount_stars=amount_stars,
         )
     except Exception as e:
         logger.error(f"complete_payment raised for user {user_id}: {e}")
@@ -107,6 +152,9 @@ async def _activate_with_resilience(
             "external_id": charge_id,
             "duration_days": duration_days,
             "plan_key": plan_key,
+            # Carry the amount so the queue drain re-validates correctly (PAY-001).
+            "amount_stars": amount_stars,
+            "amount_ton": amount_ton,
         })
         result["queued"] = True
     except Exception as e:
@@ -176,54 +224,40 @@ async def pay_command(message: types.Message):
         f"🎁 <b>Special:</b> Use /refer to earn free access!"
     )
     
-    # Inline keyboard with payment options
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [
-            types.InlineKeyboardButton(text="🥉 Starter - 1335⭐", callback_data="pay_stars_starter"),
-            types.InlineKeyboardButton(text="🥈 Pro - 4000⭐", callback_data="pay_stars_pro")
-        ],
-        [
-            types.InlineKeyboardButton(text="🥇 Pro+ - 8000⭐", callback_data="pay_stars_pro_plus"),
-            types.InlineKeyboardButton(text="💎 Elite - 16000⭐", callback_data="pay_stars_elite")
-        ],
-        [
-            types.InlineKeyboardButton(text="🪙 TON Payment", callback_data="pay_ton"),
-            types.InlineKeyboardButton(text="ℹ️ Plan Details", callback_data="plan_details")
-        ],
-        [
-            types.InlineKeyboardButton(text="🎁 Referrals", callback_data="referrals"),
-            types.InlineKeyboardButton(text="📊 Check Status", callback_data=f"check_status_{user_id}")
-        ]
-    ])
-    
+    # Inline keyboard with payment options (prices rendered from core/pricing.py).
+    keyboard = _build_payment_keyboard(user_id)
+
     await message.reply(payment_msg, parse_mode="HTML", reply_markup=keyboard)
 
 # Telegram Stars Payment Handlers
 @router.callback_query(lambda c: c.data.startswith("pay_stars_"))
 async def handle_stars_payment(callback_query: types.CallbackQuery):
-    """Handle Telegram Stars payment"""
-    if not PAYMENT_TOKEN:
-        await callback_query.answer("Payment not configured", show_alert=True)
-        return
-    
+    """Handle Telegram Stars payment.
+
+    Telegram Stars (currency "XTR") are a native Telegram payment method and take
+    NO payment provider — ``provider_token`` MUST be empty. PAYMENT_TOKEN is only
+    for third-party fiat providers and is irrelevant here, so the Stars path is
+    available regardless of whether PAYMENT_TOKEN is set.
+    """
     plan_key = callback_query.data.split("pay_stars_")[-1]
     plan = PLANS.get(plan_key)
-    
+
     if not plan:
         await callback_query.answer("Invalid plan", show_alert=True)
         return
-    
-    # Create invoice
-    prices = [LabeledPrice(label=f"{plan['name']} (1 month)", amount=plan['price_stars'] * 100)]
-    
+
+    # XTR amount is the WHOLE number of Stars — never ×100 (see core/pricing.py
+    # XTR rule). expected_stars() is the single source of truth for this value.
+    prices = [LabeledPrice(label=f"{plan['name']} (1 month)", amount=expected_stars(plan_key))]
+
     await callback_query.bot.send_invoice(
         chat_id=callback_query.message.chat.id,
         title=f"TonGPT {plan['name']}",
-        description=f"Upgrade to {plan['name']} for premium features:\n" + 
+        description=f"Upgrade to {plan['name']} for premium features:\n" +
                    "\n".join([f"• {feature}" for feature in plan['features']]),
         payload=f"premium_{plan_key}",
-        provider_token=PAYMENT_TOKEN,
-        currency="XTR",  # Telegram Stars
+        provider_token="",          # REQUIRED empty for Telegram Stars (XTR)
+        currency="XTR",             # Telegram Stars
         prices=prices,
         start_parameter="TonGPT",
         need_email=False,
@@ -231,7 +265,7 @@ async def handle_stars_payment(callback_query: types.CallbackQuery):
         need_shipping_address=False,
         is_flexible=False
     )
-    
+
     await callback_query.answer("Invoice sent!")
 
 @router.pre_checkout_query()
@@ -290,16 +324,24 @@ async def successful_payment_handler(message: Message):
     # Postgres (via the unique index on ExternalId) is the idempotency authority
     # — NOT Redis. A deterministic fallback keeps retries dedupable in the
     # (extremely unlikely) case Telegram omits the charge id.
-    charge_id = getattr(payment, "telegram_payment_charge_id", None)
+    charge_id = (getattr(payment, "telegram_payment_charge_id", None)
+                 or getattr(payment, "provider_payment_charge_id", None))
     if not charge_id:
-        charge_id = "fallback_" + hashlib.sha256(
-            f"{user_id}:{payment.invoice_payload}:{payment.total_amount}:{payment.currency}".encode()
-        ).hexdigest()[:32]
-        logger.warning(f"No telegram_payment_charge_id; using deterministic fallback for user {user_id}")
+        # PAY-008: the fallback id MUST be unique per payment. The old hash used
+        # only (user, payload, amount, currency), so two identical purchases by
+        # the same user collided into one external_id and the second was deduped
+        # away (lost). Include the message id + date, which are unique per payment.
+        uniq = (
+            f"{user_id}:{payment.invoice_payload}:{payment.total_amount}:"
+            f"{payment.currency}:{message.message_id}:{getattr(message, 'date', '')}"
+        )
+        charge_id = "fallback_" + hashlib.sha256(uniq.encode()).hexdigest()[:32]
+        logger.warning(f"No telegram_payment_charge_id; using unique fallback for user {user_id}")
 
     engine_plan = _plan_to_engine(plan_key)
     duration_days = plan.get("duration_days", 30)
-    stars_received = payment.total_amount // 100
+    # XTR total_amount is the whole number of Stars — no // 100 (see pricing.py).
+    stars_received = payment.total_amount
 
     logger.info(
         f"payment_received user={user_id} plan={plan_key} charge_id={charge_id} "
@@ -310,6 +352,7 @@ async def successful_payment_handler(message: Message):
     result = await _activate_with_resilience(
         user_id=user_id, engine_plan=engine_plan, provider="telegram_stars",
         charge_id=charge_id, duration_days=duration_days, plan_key=plan_key,
+        amount_stars=stars_received,
     )
 
     # Best-effort revenue metrics — must NEVER gate or fail the activation.
@@ -505,25 +548,8 @@ async def back_to_payment_callback(callback_query: types.CallbackQuery):
         f"🎁 <b>Special:</b> Use /refer to earn free access!"
     )
 
-    # Inline keyboard with payment options
-    payment_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [
-            types.InlineKeyboardButton(text="🥉 Starter - 1335⭐", callback_data="pay_stars_starter"),
-            types.InlineKeyboardButton(text="🥈 Pro - 4000⭐", callback_data="pay_stars_pro"),
-        ],
-        [
-            types.InlineKeyboardButton(text="🥇 Pro+ - 8000⭐", callback_data="pay_stars_pro_plus"),
-            types.InlineKeyboardButton(text="💎 Elite - 16000⭐", callback_data="pay_stars_elite"),
-        ],
-        [
-            types.InlineKeyboardButton(text="🪙 TON Payment", callback_data="pay_ton"),
-            types.InlineKeyboardButton(text="ℹ️ Plan Details", callback_data="plan_details"),
-        ],
-        [
-            types.InlineKeyboardButton(text="🎁 Referrals", callback_data="referrals"),
-            types.InlineKeyboardButton(text="📊 Check Status", callback_data=f"check_status_{user_id}"),
-        ]
-    ])
+    # Inline keyboard with payment options (prices rendered from core/pricing.py).
+    payment_keyboard = _build_payment_keyboard(user_id)
 
     await callback_query.message.edit_text(
         payment_menu_text,
@@ -603,27 +629,6 @@ def _plan_to_engine(plan_key: str) -> str:
     return {"starter": "Starter", "pro": "Pro", "pro_plus": "ProPlus", "elite": "Elite"}.get(plan_key, plan_key)
 
 
-async def activate_premium_plan(user_id: int, plan_key: str, plan: dict, payment_record_id: str = None):
-    """Activate premium plan for user via C# Engine (requires payment_record_id from record_payment)."""
-    try:
-        plan_value = _plan_to_engine(plan_key)
-        success = await engine_client.upgrade_user(str(user_id), plan_value, payment_record_id=payment_record_id)
-        
-        if success:
-            logger.info(f"Successfully activated {plan_key} for {user_id} via Engine")
-        else:
-            logger.error(f"Failed to activate {plan_key} for {user_id} via Engine")
-
-        # Keep some local Redis setting for fallback/speed if needed, but Engine is source of truth
-        # For now, we trust the Engine call.
-        
-        # Reset daily usage in Redis (still managed by Python for now)
-        redis_client.delete(f"usage_today:{user_id}")
-        
-    except Exception as e:
-        logger.error(f"Error activating plan: {e}")
-
-# Registration function
-def register_pay_handlers(dp):
-    """Register payment handlers with the dispatcher"""
-    dp.include_router(router)
+# NOTE: activate_premium_plan() was REMOVED — it used the deleted, amount-blind
+# /Subscription/upgrade path. Activation now flows ONLY through the
+# successful_payment handler -> _activate_with_resilience -> complete_payment.

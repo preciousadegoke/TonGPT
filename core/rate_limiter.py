@@ -317,6 +317,10 @@ class RateLimiter:
                     retry_after=retry, window="minute", degraded=True,
                 )
             bucket.append(now)
+            # RLIM-002: bound memory — drop now-empty buckets when the map is large.
+            if len(self._mem) > 10000:
+                for k in [k for k, v in self._mem.items() if not v][:2000]:
+                    self._mem.pop(k, None)
             return RateLimitDecision(
                 allowed=True, tier=tier, endpoint=endpoint,
                 limit=self.fallback_per_minute,
@@ -324,11 +328,69 @@ class RateLimiter:
                 window="minute", degraded=True,
             )
 
+    # ----- atomic check+consume (RLIM-001) -------------------------------- #
+    # The previous design peeked all windows, then committed in a SEPARATE
+    # pipeline. Concurrent requests could all pass the peek before any committed,
+    # so a user could exceed the cap by firing requests in parallel. This Lua
+    # script runs ENTIRELY inside Redis (atomically): it checks every window and
+    # only consumes a slot in each if ALL windows pass — no peek/commit gap.
+    _ATOMIC_LUA = """
+    local now = tonumber(ARGV[1])
+    local member = ARGV[2]
+    local n = (#ARGV - 2) / 2
+    local tightest_remaining = -1
+    local tightest_limit = 0
+    for i=1,n do
+        local key = KEYS[i]
+        local seconds = tonumber(ARGV[1 + i*2])
+        local limit = tonumber(ARGV[2 + i*2])
+        if limit >= 0 then
+            redis.call('ZREMRANGEBYSCORE', key, 0, now - seconds)
+            local count = redis.call('ZCARD', key)
+            if count >= limit then
+                local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+                local retry = seconds
+                if oldest[2] then
+                    retry = math.ceil(seconds - (now - tonumber(oldest[2])))
+                    if retry < 1 then retry = 1 end
+                end
+                return {0, retry, i, 0, 0}
+            end
+            local remaining = limit - count - 1
+            if tightest_remaining < 0 or remaining < tightest_remaining then
+                tightest_remaining = remaining
+                tightest_limit = limit
+            end
+        end
+    end
+    for i=1,n do
+        local key = KEYS[i]
+        local seconds = tonumber(ARGV[1 + i*2])
+        local limit = tonumber(ARGV[2 + i*2])
+        if limit >= 0 then
+            redis.call('ZADD', key, now, member)
+            redis.call('EXPIRE', key, seconds + 5)
+        end
+    end
+    if tightest_remaining < 0 then tightest_remaining = 0 end
+    return {1, 0, 0, tightest_remaining, tightest_limit}
+    """
+
+    def _atomic_check(self, user_id: Any, endpoint: str, limits: "TierLimit", now: float):
+        keys = [self._key(user_id, endpoint, w) for w, _s, _a in _WINDOWS]
+        member = f"{now:.6f}:{os.urandom(4).hex()}"
+        argv = [now, member]
+        for _w, seconds, attr in _WINDOWS:
+            argv += [seconds, getattr(limits, attr)]
+        res = self._raw.eval(self._ATOMIC_LUA, len(keys), *keys, *argv)
+        # res = [allowed, retry_after, window_index, tightest_remaining, tightest_limit]
+        return [int(x) for x in res]
+
     # ----- public: check + consume ---------------------------------------- #
     async def check(
         self, user_id: Any, tier: str = "free", endpoint: str = "ai_queries"
     ) -> RateLimitDecision:
-        """Check and, if allowed, consume one unit of quota.
+        """Check and, if allowed, consume one unit of quota — ATOMICALLY.
 
         Never raises. On any Redis error it degrades to the conservative
         in-process fallback rather than failing open.
@@ -345,46 +407,24 @@ class RateLimiter:
             return await self._check_memory_fallback(user_id, tier, endpoint)
 
         try:
-            # Phase 1: check every window WITHOUT consuming.
-            tightest_remaining = None
-            tightest_limit = 0
-            for window, seconds, attr in _WINDOWS:
-                limit = getattr(limits, attr)
-                if limit < 0:
-                    continue  # unlimited window
-                key = self._key(user_id, endpoint, window)
-                count, retry_after = await asyncio.to_thread(
-                    self._peek_redis, key, seconds, now
-                )
-                if count >= limit:
-                    log.warning(
-                        "rate_limit_hit",
-                        user_id=user_id, tier=tier, endpoint=endpoint,
-                        window=window, mode="redis", limit=limit,
-                        count=count, retry_after=retry_after,
-                    )
-                    return RateLimitDecision(
-                        allowed=False, tier=tier, endpoint=endpoint,
-                        limit=limit, remaining=0, retry_after=retry_after,
-                        window=window,
-                    )
-                remaining = limit - count - 1
-                if tightest_remaining is None or remaining < tightest_remaining:
-                    tightest_remaining = remaining
-                    tightest_limit = limit
-
-            # Phase 2: all windows passed -> consume in every window.
-            await asyncio.to_thread(self._commit_redis, user_id, endpoint, now)
-
-            log.debug(
-                "rate_limit_ok",
-                user_id=user_id, tier=tier, endpoint=endpoint,
-                remaining=tightest_remaining,
+            allowed, retry_after, win_idx, remaining, limit = await asyncio.to_thread(
+                self._atomic_check, user_id, endpoint, limits, now
             )
+            if not allowed:
+                window = _WINDOWS[win_idx - 1][0] if 1 <= win_idx <= len(_WINDOWS) else ""
+                log.warning(
+                    "rate_limit_hit",
+                    user_id=user_id, tier=tier, endpoint=endpoint,
+                    window=window, mode="redis_atomic", retry_after=retry_after,
+                )
+                return RateLimitDecision(
+                    allowed=False, tier=tier, endpoint=endpoint,
+                    limit=limit, remaining=0, retry_after=retry_after, window=window,
+                )
+            log.debug("rate_limit_ok", user_id=user_id, tier=tier, endpoint=endpoint, remaining=remaining)
             return RateLimitDecision(
                 allowed=True, tier=tier, endpoint=endpoint,
-                limit=tightest_limit,
-                remaining=max(0, tightest_remaining or 0),
+                limit=limit, remaining=max(0, remaining),
             )
         except Exception as e:  # noqa: BLE001 - never let limiter crash a handler
             log.warning("rate_limit_redis_error_degraded", err=str(e), user_id=user_id)
@@ -553,6 +593,10 @@ async def _resolve_tier(limiter: RateLimiter, user_id: Any) -> str:
     except Exception as e:  # noqa: BLE001
         log.debug("tier_resolve_failed", user_id=user_id, err=str(e))
     limiter._tier_cache[user_id] = (tier, now + limiter._tier_ttl)
+    # RLIM-002: bound memory — evict expired entries when the cache grows large.
+    if len(limiter._tier_cache) > 50000:
+        for k in [k for k, (_t, exp) in list(limiter._tier_cache.items()) if exp <= now][:10000]:
+            limiter._tier_cache.pop(k, None)
     return tier
 
 

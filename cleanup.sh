@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 #
 # TonGPT repo cleanup — SAFE, STAGED, REVERSIBLE.
+# Refreshed 2026-06-30 to match the CURRENT tree (most of the original
+# dead files were already removed; this targets what actually remains).
+#
 # Every destructive action goes through git and is preceded by a backup branch.
 #
 # Usage:
@@ -19,14 +22,17 @@ for a in "$@"; do
   [ "$a" = "--yes" ] && YES=1
 done
 
-run()  { echo "  \$ $*"; [ "$DRY" -eq 0 ] && eval "$@"; }
+run()  { echo "  \$ $*"; if [ "$DRY" -eq 0 ]; then eval "$@"; fi; }
 ask()  { [ "$YES" -eq 1 ] && return 0; read -r -p "→ $1 [y/N] " r; [ "$r" = "y" ] || [ "$r" = "Y" ]; }
 stage(){ echo; echo "════════ $1 ════════"; }
 
 # ── Guard rails ────────────────────────────────────────────────────────────
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "Not a git repo. Abort."; exit 1; }
 
-stage "0. Backup branch + line-ending normalization"
+stage "0. Backup branch + commit current work + CRLF normalization"
+echo "  The working tree currently shows ~160 files 'modified' — that is CRLF↔LF"
+echo "  line-ending noise from Windows/OneDrive, mixed with a few real edits."
+echo "  Commit or stash BEFORE cleaning so the cleanup diff is readable."
 BACKUP="backup/pre-cleanup-$(date +%Y%m%d-%H%M%S)"
 run "git branch '$BACKUP'"
 echo "  Backup branch: $BACKUP (restore anything with: git checkout $BACKUP -- <path>)"
@@ -35,60 +41,53 @@ if ask "Normalize CRLF->LF now (recommended; clears the 'everything modified' no
   run "git commit -m 'chore: normalize line endings' || true"
 fi
 
-# ── Stage 1: zero-risk dead code ───────────────────────────────────────────
-stage "1. Delete dead code (recoverable via git)"
-if ask "Remove original_main.py, bot/handlers/, temp tar, empty ton_data.db?"; then
-  run "git rm -q --ignore-unmatch original_main.py"
-  run "git rm -qr --ignore-unmatch bot/handlers"
-  run "git rm -q --ignore-unmatch '.tmp-tongpt-bot-image.tar623475655'"
-  run "git rm -q --ignore-unmatch ton_data.db"
+# ── Stage 1: dead code / junk artifacts ────────────────────────────────────
+stage "1. Remove tracked junk (recoverable via git)"
+if ask "git rm tracked junk: _perm_test (empty) and services/ton_ecosystem.db (runtime DB)?"; then
+  run "git rm -q --ignore-unmatch _perm_test"
+  run "git rm -q --cached --ignore-unmatch services/ton_ecosystem.db"   # keep on disk, stop tracking
 fi
 
-# ── Stage 2: stop tracking runtime data ────────────────────────────────────
-stage "2. Untrack committed DBs + logs (kept on disk locally)"
-if ask "git rm --cached the tracked *.db and remove bot.log?"; then
-  run "git rm -q --cached --ignore-unmatch notifications.db ton_ecosystem.db ton_tweets.db"
-  run "rm -f bot.log"
+# ── Stage 2: untracked local clutter (not in git; just delete on disk) ──────
+stage "2. Delete untracked runtime/junk files on disk"
+if ask "Delete bot.log, notifications.db, the temp .tar, and the empty miniapp/ dir?"; then
+  run "rm -f bot.log notifications.db"
+  run "rm -f .tmp-tongpt-bot-image.tar623475655"
+  run "rmdir miniapp 2>/dev/null || true"   # only removes it if empty (it is)
 fi
 
-# ── Stage 3: consolidated docs ─────────────────────────────────────────────
-stage "3. Remove the 9 redundant fix/status docs (content lives in docs/CHANGELOG.md)"
-REDUNDANT=(CHANGES.md FIX_SUMMARY.md FIXES_SUMMARY.md README_FIXES.md \
-           VERIFICATION_REPORT.md STATUS.txt QUICK_START.md INDEX.md)
-# NOTE: the OLD top-level CHANGELOG.md is replaced by docs/CHANGELOG.md.
-if ask "Delete redundant docs + old CHANGELOG.md, and move audit into docs/?"; then
-  run "git rm -q --ignore-unmatch ${REDUNDANT[*]}"
-  run "git rm -q --ignore-unmatch CHANGELOG.md"          # superseded by docs/CHANGELOG.md
-  # These two were consolidated into docs/SECURITY.md:
-  run "git rm -q --ignore-unmatch SECURITY_FIXES.md CREDENTIAL_ROTATION.md"
-  # Preserve the substantive audit by MOVING it (don't retype):
+# ── Stage 3: consolidate status / verification docs ────────────────────────
+stage "3. Move status/verification docs under docs/ (keep content, one home)"
+echo "  REMEDIATION_REGISTER.md (issue/fix register) and PRE_LAUNCH_SMOKE_TEST.md"
+echo "  are substantive living docs — MOVE them into docs/, don't delete."
+if ask "Move REMEDIATION_REGISTER.md + PRE_LAUNCH_SMOKE_TEST.md into docs/?"; then
   run "mkdir -p docs"
-  run "git mv PRODUCTION_READINESS_AUDIT.md docs/PRODUCTION_AUDIT.md 2>/dev/null || true"
+  run "git mv REMEDIATION_REGISTER.md docs/REMEDIATION_REGISTER.md 2>/dev/null || git add docs/"
+  # PRE_LAUNCH_SMOKE_TEST.md may be untracked; mv on disk then add.
+  run "mv -f PRE_LAUNCH_SMOKE_TEST.md docs/PRE_LAUNCH_SMOKE_TEST.md 2>/dev/null || true"
+  run "git add docs/PRE_LAUNCH_SMOKE_TEST.md 2>/dev/null || true"
 fi
 
-# ── Stage 4: env hygiene ───────────────────────────────────────────────────
-stage "4. Remove the 2 genuinely-unused env keys from .env.example"
-if ask "Strip REDIS_DB and TONCENTER_API lines from .env.example?"; then
-  run "sed -i.bak '/^REDIS_DB=/d; /^TONCENTER_API=/d' .env.example && rm -f .env.example.bak"
-fi
-
-# ── Stage 5 (CAREFUL): Mini-App promotion ──────────────────────────────────
-stage "5. [CAREFUL] Promote miniapp-v2 → miniapp"
-echo "  Prerequisite: build & verify v2 first:  cd miniapp-v2 && npm install && npm run build"
-if ask "Delete legacy miniapp/ and rename miniapp-v2/ -> miniapp/ NOW?"; then
-  run "git rm -qr --ignore-unmatch miniapp"
+# ── Stage 4 (CAREFUL but now LOW-RISK): Mini-App promotion ──────────────────
+stage "4. Promote miniapp-v2 -> miniapp"
+echo "  api/miniapp_server.py ALREADY prefers 'miniapp/dist' then 'miniapp-v2/dist'"
+echo "  (candidate fallback list), so this rename no longer breaks static serving."
+echo "  Prerequisite: a fresh build exists -> cd miniapp-v2 && npm install && npm run build"
+if ask "Rename miniapp-v2/ -> miniapp/ NOW (empty legacy miniapp/ already gone)?"; then
+  run "rmdir miniapp 2>/dev/null || true"
   run "git mv miniapp-v2 miniapp"
-  echo "  ⚠️  Now update api/miniapp_server.py to serve 'miniapp/dist' (see CLEANUP_PLAN §5)."
+  echo "  ✔ No code change needed; server picks up miniapp/dist automatically."
 fi
 
-# ── Stage 6 (OPTIONAL): structural moves ───────────────────────────────────
-stage "6. [OPTIONAL] Tidy structure: scripts/, tests/, contracts/"
+# ── Stage 5 (OPTIONAL): tidy root scripts ──────────────────────────────────
+stage "5. [OPTIONAL] Move root verify_*.py / test_*.py off the root"
 if ask "Move root verify_*.py/check_*.py -> scripts/ and test_*.py -> tests/?"; then
   run "mkdir -p scripts tests"
   run "git mv verify_*.py scripts/ 2>/dev/null || true"
   run "git mv check_connect.py quick_test_twitter.py loader.py scripts/ 2>/dev/null || true"
   run "git mv test_*.py tests/ 2>/dev/null || true"
-  echo "  ⚠️  If anything imports these by root path, update imports (see §6 verify)."
+  echo "  ⚠️  These are run by path (e.g. 'python test_import.py'). Update any docs/CI"
+  echo "      that reference the old root paths (README §verification mentions test_import.py)."
 fi
 
 echo

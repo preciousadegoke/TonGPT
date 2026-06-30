@@ -32,6 +32,7 @@ class AppContext:
     dp: Optional[Any] = None
     gpt_handler: Optional[Any] = None
     x_monitor: Optional[Any] = None
+    degraded: bool = False  # MAIN-002: True when service init failed
 
 ctx = AppContext()
 
@@ -182,6 +183,50 @@ async def _backoff(attempt: int, base: float = 1.0, cap: float = 30.0):
     jitter = random.uniform(0, delay * 0.25)
     await asyncio.sleep(delay + jitter)
 
+
+# MAIN-001: supervise long-lived background tasks so they can't die silently.
+# Strong references are kept in _bg_tasks so the loop isn't garbage-collected.
+_bg_tasks: list = []
+
+
+async def _supervise(name: str, factory, *, restart: bool = True, base: float = 2.0, cap: float = 60.0):
+    """Run ``factory()`` (a no-arg callable returning a fresh coroutine); on crash
+    or unexpected return, log loudly, report it, and restart with capped
+    exponential backoff. Cancellation propagates cleanly for shutdown."""
+    attempt = 0
+    while True:
+        start = time.time()
+        try:
+            await factory()
+            if not restart:
+                return
+            logger.warning(f"⚠️ Supervised task '{name}' exited unexpectedly; restarting.")
+        except asyncio.CancelledError:
+            logger.info(f"Supervised task '{name}' cancelled.")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Supervised task '{name}' crashed: {type(e).__name__}: {e}", exc_info=True)
+            try:
+                await error_reporter.report(e, context=f"supervised:{name}")
+            except Exception:
+                pass
+            if not restart:
+                return
+        # Healthy long run resets the backoff so a one-off blip doesn't slow restarts.
+        if time.time() - start > 120:
+            attempt = 0
+        attempt += 1
+        delay = min(cap, base * (2 ** min(attempt, 6)))
+        logger.info(f"↻ Restarting supervised task '{name}' in {delay:.0f}s")
+        await asyncio.sleep(delay)
+
+
+def _spawn_supervised(name: str, factory, *, restart: bool = True):
+    """Create a supervised, tracked background task (MAIN-001)."""
+    task = asyncio.create_task(_supervise(name, factory, restart=restart), name=name)
+    _bg_tasks.append(task)
+    return task
+
 # ── Price Alert Polling Loop (Fix-5) ──────────────────────────────────
 async def price_alert_polling_loop():
     """Background task: check Redis alerts and send notifications when price crosses target."""
@@ -275,6 +320,16 @@ async def on_startup():
     """
     logger.info("🚀 TonGPT service initialization starting...")
 
+    # MOD-001: surface content-moderation readiness loudly at startup (raises if
+    # MODERATION_REQUIRED=true and no usable OpenAI moderation key is configured).
+    try:
+        from services.moderation_service import report_startup_status
+        report_startup_status()
+    except RuntimeError:
+        raise  # MODERATION_REQUIRED -> refuse to start unmoderated
+    except Exception as e:
+        logger.warning(f"⚠️ Moderation status check failed: {type(e).__name__}: {e}")
+
     # Initialize the shared async HTTP client for TON data fetching. This makes
     # all TONAPI calls non-blocking (replaces the old sync requests + time.sleep
     # that froze the event loop). Lazily created on first use too, so this is a
@@ -286,18 +341,17 @@ async def on_startup():
     except Exception as e:
         logger.warning(f"⚠️ TON API client init failed: {type(e).__name__}: {e}")
 
-    # FIX-7: Use asyncio.create_task for the miniapp server
+    # FIX-7 + MAIN-001: run the miniapp server under supervision so a crash
+    # restarts it instead of silently taking the whole API down.
     try:
         logger.info("🌐 Starting Mini-App server task...")
-        asyncio.create_task(
-            start_miniapp_server_async(config),
-            name="miniapp_server"
-        )
+        _spawn_supervised("miniapp_server", lambda: start_miniapp_server_async(config))
     except Exception as e:
         logger.warning(f"⚠️ Mini-App server task failed to create: {type(e).__name__}: {e}")
     
     # FIX-10: Initialize services with timeout + retry
     services = {}
+    init_ok = False
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -312,6 +366,7 @@ async def on_startup():
                         initialize_all_services(config),
                         timeout=30.0
                     )
+                init_ok = True
                 break  # Success — exit retry loop
             except (TimeoutError, asyncio.TimeoutError):
                 logger.error(f"Service initialization timed out (attempt {attempt + 1}/{max_retries})")
@@ -324,6 +379,23 @@ async def on_startup():
                 await _backoff(attempt)  # FIX-9
             else:
                 logger.critical("All service init retries exhausted — bot will run with limited features")
+
+    # MAIN-002: explicit degraded-start policy. If init never succeeded, mark the
+    # bot DEGRADED and surface it loudly. Set FAIL_ON_INIT_ERROR=true for
+    # payment-critical deployments that should refuse to start rather than run
+    # with broken downstream services.
+    if not init_ok:
+        ctx.degraded = True
+        safe_redis("set", "bot_status", "degraded")
+        logger.critical("🚨 Service initialization FAILED — running in DEGRADED mode. "
+                        "Payments/AI may be unreliable until downstream services recover.")
+        try:
+            await error_reporter.report(
+                RuntimeError("service_init_degraded"), context="on_startup")
+        except Exception:
+            pass
+        if os.environ.get("FAIL_ON_INIT_ERROR", "false").strip().lower() in ("1", "true", "yes"):
+            raise RuntimeError("Service init failed and FAIL_ON_INIT_ERROR=true — refusing to start.")
     
     # FIX-3: Update global state to use ctx properties
     ctx.gpt_handler = services.get('gpt_handler')
@@ -338,43 +410,43 @@ async def on_startup():
     except Exception as e:
         logger.warning(f"⚠️ Rate limiter safety-net init failed: {type(e).__name__}: {e}")
     
-    # Start monitoring loop (Prometheus/metrics collection)
+    # All long-lived loops below run under _spawn_supervised (MAIN-001): if any
+    # crashes it is logged, reported, and restarted with backoff — never silently
+    # dead. The reconciler in particular MUST stay alive so queued paid
+    # activations are never stranded.
+
+    # Monitoring loop (Prometheus/metrics collection).
     try:
         from core.monitoring import monitoring_loop
-        asyncio.create_task(monitoring_loop(60))
+        _spawn_supervised("monitoring_loop", lambda: monitoring_loop(60))
         logger.info("📊 Monitoring loop started (60s interval)")
     except Exception as e:
         logger.warning(f"⚠️ Monitoring loop not started: {type(e).__name__}: {e}")
-    
+
     # NOTE: Wallet monitor and X monitor tasks are started in
     # core/initialization.py → start_background_tasks(). Do NOT duplicate here.
-    
-    # Start price alert polling loop (only started here, not in start_background_tasks)
+
+    # Price alert polling loop.
     try:
-        asyncio.create_task(
-            price_alert_polling_loop(),
-            name="price_alert_poller"
-        )
+        _spawn_supervised("price_alert_poller", price_alert_polling_loop)
         logger.info("💰 Price alert polling task started")
     except Exception as e:
         logger.warning(f"⚠️ Price alert poller not started: {type(e).__name__}: {e}")
 
-    # Start payment-activation reconciliation loop. Drains the durable on-disk
-    # queue of any activations that couldn't complete synchronously (e.g. Engine
-    # was briefly down), so a paid user never permanently loses their upgrade.
+    # Payment-activation reconciliation loop — drains the durable on-disk queue so
+    # a paid user never permanently loses their upgrade.
     try:
         from services.activation_queue import reconciliation_loop
-        asyncio.create_task(reconciliation_loop(), name="activation_reconciler")
+        _spawn_supervised("activation_reconciler", reconciliation_loop)
         logger.info("💳 Payment activation reconciliation loop started")
     except Exception as e:
         logger.warning(f"⚠️ Activation reconciler not started: {type(e).__name__}: {e}")
 
-    # Start TON on-chain payment monitor. Self-disables (logs and returns) when
-    # TON_PAYMENTS_ENABLED is false or MONITORED_WALLET_ADDRESS is unset, so this
-    # is safe to always create.
+    # TON on-chain payment monitor. Self-disables when TON_PAYMENTS_ENABLED is
+    # false or MONITORED_WALLET_ADDRESS is unset, so it's safe to always create.
     try:
         from services.ton_payments import monitor_loop as ton_monitor_loop
-        asyncio.create_task(ton_monitor_loop(), name="ton_payment_monitor")
+        _spawn_supervised("ton_payment_monitor", ton_monitor_loop)
         logger.info("🪙 TON payment monitor task created")
     except Exception as e:
         logger.warning(f"⚠️ TON payment monitor not started: {type(e).__name__}: {e}")
@@ -401,6 +473,13 @@ async def on_shutdown():
         await shutdown_ton_service()
     except Exception as e:
         logger.warning(f"⚠️ TON API client close failed: {type(e).__name__}: {e}")
+
+    # REL-002: close the shared Engine client session.
+    try:
+        from services.engine_client import engine_client
+        await engine_client.close()
+    except Exception as e:
+        logger.warning(f"⚠️ Engine client close failed: {type(e).__name__}: {e}")
     
     try:
         # FIX-3: Use ctx

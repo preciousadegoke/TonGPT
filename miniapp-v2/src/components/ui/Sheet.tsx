@@ -27,13 +27,17 @@ export function Sheet({ open, onClose, title, children }: SheetProps) {
 
   return (
     <div class="fixed inset-0 z-40 flex items-end animate-fade-in" role="dialog" aria-modal="true" aria-label={title}>
-      <div class="absolute inset-0 bg-black/60" onClick={onClose} />
       <div
-        class="relative w-full card rounded-b-none rounded-t-3xl p-5 animate-slide-up"
+        class="absolute inset-0 bg-black/55"
+        style={{ backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+        onClick={onClose}
+      />
+      <div
+        class="relative w-full rounded-t-3xl border-t border-x border-border bg-surface-raised p-5 animate-slide-up shadow-float"
         style={{ paddingBottom: 'calc(20px + var(--tg-bottom))' }}
       >
-        <div class="mx-auto mb-4 h-1 w-10 rounded-full bg-border" />
-        {title && <h3 class="text-lg font-bold mb-4">{title}</h3>}
+        <div class="mx-auto mb-4 h-1.5 w-11 rounded-full" style={{ background: 'var(--border-strong)' }} />
+        {title && <h3 class="text-lg font-bold mb-4 tracking-tight">{title}</h3>}
         {children}
       </div>
     </div>

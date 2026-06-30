@@ -85,8 +85,12 @@ class ModerationConfig:
     model: str = field(
         default_factory=lambda: os.getenv("OPENAI_MODERATION_MODEL", "omni-moderation-latest")
     )
-    # Allow the message through when moderation can't run (availability > strictness).
-    fail_open: bool = field(default_factory=lambda: _env_bool("MODERATION_FAIL_OPEN", True))
+    # MOD-001: FAIL-CLOSED by default. When moderation can't run we DENY rather
+    # than allow, so a misconfigured/absent key (e.g. an OpenRouter sk-or- key
+    # with no dedicated OpenAI moderation key) cannot silently disable safety on a
+    # public bot. Operators who explicitly accept the risk can set
+    # MODERATION_FAIL_OPEN=true, but the startup report will still warn loudly.
+    fail_open: bool = field(default_factory=lambda: _env_bool("MODERATION_FAIL_OPEN", False))
     timeout: float = field(default_factory=lambda: float(os.getenv("MODERATION_TIMEOUT", "8")))
     api_key: str = field(
         default_factory=lambda: (
@@ -358,6 +362,35 @@ async def is_allowed(text: str, *, user_id: Optional[Union[int, str]] = None) ->
     return (await moderate_text(text, user_id=user_id)).allowed
 
 
+def report_startup_status() -> None:
+    """Log moderation readiness loudly at startup (MOD-001).
+
+    Surfaces the common production footgun: moderation enabled but no USABLE
+    OpenAI key (an OpenRouter ``sk-or-`` key does NOT work for the Moderation
+    API), which would otherwise silently neuter the safety filter. Raises if
+    MODERATION_REQUIRED=true so the bot refuses to start unmoderated.
+    """
+    svc = get_moderation_service()
+    cfg = svc.config
+    if not cfg.enabled:
+        logger.warning("moderation_disabled_by_config",
+                       hint="MODERATION_ENABLED is false — no content moderation will run.")
+        return
+    if not cfg.has_usable_key:
+        logger.critical(
+            "moderation_enabled_but_no_usable_key",
+            fail_open=cfg.fail_open,
+            effect=("requests ALLOWED (unsafe)" if cfg.fail_open else "requests BLOCKED"),
+            hint="Set OPENAI_MODERATION_API_KEY to a real OpenAI sk-... key (an OpenRouter sk-or- key will not work).",
+        )
+        if _env_bool("MODERATION_REQUIRED", False):
+            raise RuntimeError(
+                "MODERATION_REQUIRED=true but no usable OpenAI moderation key is configured."
+            )
+        return
+    logger.info("moderation_ready", model=cfg.model, fail_open=cfg.fail_open)
+
+
 __all__ = [
     "ModerationConfig",
     "ModerationResult",
@@ -365,6 +398,7 @@ __all__ = [
     "get_moderation_service",
     "moderate_text",
     "is_allowed",
+    "report_startup_status",
 ]
 
 

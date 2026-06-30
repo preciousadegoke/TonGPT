@@ -1,42 +1,49 @@
-# TonGPT — Repo Cleanup & Technical-Debt Plan
+# TonGPT — Repo Cleanup & Technical-Debt Plan (living doc)
 
-A safe, staged plan to remove dead weight, consolidate docs, and establish a
+_Last refreshed: 2026-06-30._
+
+A safe, staged plan to remove dead weight, consolidate docs, and keep a
 professional structure. Everything destructive goes through **git** (recoverable
 from history) and is captured in [`cleanup.sh`](../cleanup.sh).
 
-> ⚠️ Before running anything: the working tree currently shows almost every file
-> as "modified". That's **CRLF↔LF line-ending noise** from the Windows/OneDrive
-> environment, not real edits. Normalise it first (see §6) so the cleanup diff is
-> readable.
+> ⚠️ **Read first.** The working tree currently shows ~160 files as "modified".
+> That is almost entirely **CRLF↔LF line-ending noise** from the Windows/OneDrive
+> environment — plus a handful of real in-flight edits (`api/miniapp_server.py`,
+> the C# controllers, `REMEDIATION_REGISTER.md`). **Commit or stash your real work
+> first**, then normalize line endings (§6) so the cleanup diff is readable.
+
+This repo has already been through one cleanup pass. Several files named in older
+plans (`original_main.py`, `bot/handlers/`, `ton_data.db`, `CHANGES.md`,
+`FIX_SUMMARY.md`, `SECURITY_FIXES.md`, …) **are already gone**. The sections below
+describe only what *still* remains as of the date above.
 
 ---
 
 ## 1. Recommended final folder structure
 
 The Python import graph is large and working, so we **don't** repackage core code
-into `src/` (high risk, low reward). Instead we group the already-separate
-concerns and delete clutter:
+into `src/` (high risk, low reward). We group the already-separate concerns and
+delete clutter:
 
 ```
 tongpt/
 ├── README.md                  # architecture + dev workflow (front door)
-├── main.py                    # bot entrypoint (unchanged)
+├── main.py                    # bot + mini-app entrypoint (unchanged)
 ├── requirements.txt  requirements-prod.txt
 ├── Dockerfile  docker-compose.yml  docker-compose.prod.yml  .dockerignore
 ├── .env.example  .gitignore
 │
 ├── api/                       # FastAPI mini-app server
-├── bot/                       # bot command registration (commands.py)
-├── core/                      # config, pricing, rate-limit, security  (source of truth)
-├── handlers/                  # Telegram command + callback handlers
+├── bot/                       # bot command registration (commands.py) — KEEP
+├── core/                      # config, pricing, rate-limit, security (source of truth)
+├── handlers/                  # Telegram command + callback handlers (the REAL ones)
 ├── services/                  # external API clients (TON, DEX, OpenAI, X)
 ├── utils/                     # redis, formatting, realtime helpers
 ├── gpt/                       # AI / LLM logic
 │
-├── contracts/                 # ← all smart-contract code lives here
-│   ├── subscription/          #   (was tongpt-subscription/)
-│   ├── wrappers/              #   (was /wrappers)
-│   └── tact.config.json
+├── contracts/                 # Tact smart-contract code
+│   ├── (subscription/)        #   optional: fold tongpt-subscription/ here
+│   └── (wrappers/)            #   optional: fold wrappers/ here
 │
 ├── miniapp/                   # ← the Preact v2 app (renamed from miniapp-v2/)
 │   └── dist/                  #   build output served by FastAPI
@@ -45,131 +52,135 @@ tongpt/
 ├── tests/                     # all test_*.py consolidated here
 │
 └── docs/
-    ├── CLEANUP_PLAN.md        # this file
-    ├── CHANGELOG.md           # consolidated history (replaces 9 fix docs)
-    ├── SECURITY.md            # security fixes + credential rotation
-    ├── PRODUCTION_AUDIT.md    # the compliance audit (moved)
-    ├── DISCLAIMER.md  PRIVACY.md  TERMS.md   # legal (kept; linked by the app)
+    ├── CLEANUP_PLAN.md          # this file (living)
+    ├── CHANGELOG.md             # consolidated history
+    ├── SECURITY.md              # security fixes + credential rotation
+    ├── PRODUCTION_AUDIT.md      # compliance audit
+    ├── REMEDIATION_REGISTER.md  # moved off root (issue/fix register)
+    ├── PRE_LAUNCH_SMOKE_TEST.md # moved off root (launch checklist)
+    └── DISCLAIMER.md PRIVACY.md TERMS.md  # legal — only if not linked from root
 ```
 
-Two structural moves are **optional / careful** (they change paths): folding
-`tongpt-subscription/`+`wrappers/` into `contracts/`, and moving root
-`verify_*.py`/`test_*.py` into `scripts/` and `tests/`. They're in a separate,
-clearly-marked stage of the script. The dead-code and doc cleanup are zero-risk.
+The folds (`tongpt-subscription/` + `wrappers/` → `contracts/`) and the root
+`verify_*.py`/`test_*.py` → `scripts/`/`tests/` moves change paths, so they live in
+clearly-marked **optional** stages. The dead-code, doc, and Mini-App cleanups are
+low risk.
 
 ---
 
-## 2. Delete list (categorized)
+## 2. What still needs cleaning (current state)
 
-### A. Safe to delete — dead code, recoverable via git
-| Path | Why |
-| --- | --- |
-| `original_main.py` | Not imported anywhere. Only a *comment* in `main.py:607` mentions it. |
-| `bot/handlers/` | Dead stub. Its `register_handlers()` is never imported; the real handlers live in `handlers/`. (`bot/commands.py` is used — **keep it**.) |
-| `.tmp-tongpt-bot-image.tar623475655` | 0-byte leftover Docker build artifact. |
-| `ton_data.db` | 0 bytes, empty. |
+### A. Tracked junk — `git rm` (recoverable)
+| Path | Status | Action |
+| --- | --- | --- |
+| `_perm_test` | tracked, 0 bytes | `git rm` — a leftover permission probe. |
+| `services/ton_ecosystem.db` | **tracked**, 44 KB | `git rm --cached` — runtime DB; app recreates it. Keep on disk. |
 
-### B. Stop tracking (keep locally, add to `.gitignore`)
+### B. Untracked local clutter — delete on disk (not in git)
 | Path | Action |
 | --- | --- |
-| `notifications.db`, `ton_ecosystem.db`, `ton_tweets.db` | `git rm --cached` — runtime data that shouldn't be committed. App recreates them. |
-| `bot.log` (978 KB) | Delete; `*.log` is already git-ignored. |
+| `bot.log` | `rm` — already covered by `*.log`. |
+| `notifications.db` | `rm` — already covered by `*.db`; app recreates it. |
+| `.tmp-tongpt-bot-image.tar623475655` | `rm` — 0-byte Docker leftover. |
+| empty `miniapp/` dir | `rmdir` — legacy app already deleted; only the husk remains. |
 
-`.gitignore` is **missing `*.db`** — that's how these got committed. Fix in §4.
+> `.gitignore` already ignores `*.db`, `*.log`, `*.tar`, `.tmp-*`, `build/`,
+> `node_modules/`, `myenv/`. `services/ton_ecosystem.db` and `_perm_test` are
+> tracked only because they were committed *before* those rules existed — hence
+> `git rm --cached`.
 
-### C. Consolidate, then delete originals (content preserved in git history)
-These 9 files all describe the **same "5 critical fixes" event** — pure redundancy:
+### C. Status / verification docs — consolidate to `docs/`
+The task's "many status/fix/verification markdown files" have mostly been merged
+already. The two that remain on the root are **substantive and worth keeping** —
+move, don't delete:
 
-`CHANGELOG.md` (old), `CHANGES.md`, `FIX_SUMMARY.md`, `FIXES_SUMMARY.md`,
-`README_FIXES.md`, `VERIFICATION_REPORT.md`, `STATUS.txt`, `QUICK_START.md`,
-`INDEX.md`  → replaced by **`docs/CHANGELOG.md`**.
+- `REMEDIATION_REGISTER.md` (62 KB issue/fix register) → `docs/REMEDIATION_REGISTER.md`
+- `PRE_LAUNCH_SMOKE_TEST.md` (launch checklist) → `docs/PRE_LAUNCH_SMOKE_TEST.md`
 
-`SECURITY_FIXES.md` + `CREDENTIAL_ROTATION.md` → **`docs/SECURITY.md`**.
-`PRODUCTION_READINESS_AUDIT.md` → moved to **`docs/PRODUCTION_AUDIT.md`**.
+Living docs going forward: **`docs/CHANGELOG.md`** (history) and
+**`docs/REMEDIATION_REGISTER.md`** (open/closed issues). Point new status notes at
+those two instead of creating new root files.
 
-### D. Keep
-Legal pages `DISCLAIMER.md` / `PRIVACY.md` / `TERMS.md` (the app links them),
-`README.md` (rewritten), and all code directories, Dockerfiles, requirements,
-and tests.
+### D. Keep — do not touch
+`README.md`, legal pages (`DISCLAIMER.md` / `PRIVACY.md` / `TERMS.md`),
+`bot/commands.py`, all code dirs, Dockerfiles, requirements, `tests/`.
 
-### E. After Mini-App v2 is verified working
-- Delete legacy `miniapp/` (vanilla JS).
-- Rename `miniapp-v2/` → `miniapp/`.
-- **Breaking:** update the static-serving path in `api/miniapp_server.py` (see §5).
-
-### F. Local-only clutter (already untracked — optional, frees disk)
-`myenv/` (a committed-by-accident virtualenv? no — untracked), `__pycache__/`,
-`node_modules/`, `build/`. Safe to delete locally; all are git-ignored.
-
----
-
-## 3. Environment audit result
-
-Out of **93** keys in `.env.example`, only **2 are genuinely unused**:
-
-- `REDIS_DB` — `utils/redis_conn.py` only reads `REDIS_HOST/PORT/PASSWORD`.
-- `TONCENTER_API` — code uses a hardcoded base URL + a `DataSource` enum, not this var.
-
-Everything else (the large `RATE_LIMIT_*`, `DEX_*`, `TON_HTTP_*`, breaker blocks)
-**is** used — via `_env_int()/_env_float()/_env_bool()` wrappers in
-`core/rate_limiter.py`, `services/dexscreener_service.py`,
-`services/ton_data_service.py`, `services/moderation_service.py`. Do **not** strip
-them. Action: remove only the 2 stale keys (done in `cleanup.sh`).
+### E. Local-only, already git-ignored (optional, frees disk)
+`myenv/`, `__pycache__/`, `node_modules/`, `build/`, `miniapp-v2/node_modules/`.
+Safe to delete locally at any time.
 
 ---
 
-## 4. `.gitignore` fix
+## 3. Mini-App finalization (now LOW risk)
 
-Add the missing rules (full file shipped):
+`miniapp-v2/` is the real app; the legacy `miniapp/` is already an empty husk.
+**The earlier "breaking change" is resolved:** `api/miniapp_server.py` now resolves
+the static dir from a candidate list —
+
+```python
+_candidates = ["miniapp/dist", "miniapp-v2/dist", "miniapp"]
 ```
-*.db
-*.db-journal
-*.sqlite3        # already present
-bot.log          # covered by *.log, kept explicit for clarity
-.tmp-*
+
+so promoting v2 needs **no code edit**. Steps:
+
+```bash
+cd miniapp-v2 && npm install && npm run build   # ensure dist/ is fresh
+cd ..
+rmdir miniapp 2>/dev/null            # remove the empty husk
+git mv miniapp-v2 miniapp            # promote
 ```
+
+The server picks up `miniapp/dist` automatically on next boot.
+
+---
+
+## 4. Environment audit (unchanged)
+
+`.env.example` was audited previously: of its keys, only `REDIS_DB` and
+`TONCENTER_API` were genuinely unused and have already been removed. The large
+`RATE_LIMIT_*`, `DEX_*`, `TON_HTTP_*`, and breaker blocks **are** read via the
+`_env_int()/_env_float()/_env_bool()` wrappers — do **not** strip them.
 
 ---
 
 ## 5. Breaking changes & how they're handled
 
-1. **Mini-App serving path.** FastAPI mounts `StaticFiles(directory="miniapp")`
-   (`api/miniapp_server.py:150`). The legacy app was raw static; v2 builds to
-   `miniapp/dist`. After the rename you must:
-   ```python
-   # api/miniapp_server.py
-   if os.path.isdir("miniapp/dist"):
-       app.mount("/miniapp", StaticFiles(directory="miniapp/dist", html=True), name="miniapp")
-   ```
-   and rebuild (`cd miniapp && npm run build`). Until then, keep both folders.
-2. **Tracked DB removal.** The app must recreate `notifications.db` etc. on boot.
-   Verify a clean start before deleting local copies.
-3. **Optional contract move.** If you fold `tongpt-subscription/` into
-   `contracts/subscription/`, update `tact.config.json` / blueprint paths and any
-   CI that references them.
+1. **Mini-App serving path** — *already de-risked* by the candidate fallback list
+   (§3). No action needed beyond a fresh `npm run build`.
+2. **Tracked DB removal** — after `git rm --cached`, boot the bot/api once and
+   confirm it recreates `notifications.db` / `services/ton_ecosystem.db` cleanly
+   before relying on it.
+3. **Root script moves (optional)** — `verify_*.py` / `test_*.py` are run by path
+   (e.g. `python test_import.py`). If you move them to `scripts/`/`tests/`, update
+   the README verification snippet and any CI that calls the old paths.
+4. **Contract fold (optional)** — folding `tongpt-subscription/` + `wrappers/`
+   into `contracts/` requires updating `tact.config.json` / blueprint paths.
 
 ---
 
 ## 6. Verification checklist (run after each stage)
 
 ```bash
-# 0. Normalise line endings first (kills the CRLF "everything modified" noise)
+# 0. Normalize line endings first (kills the CRLF "everything modified" noise)
 git add --renormalize . && git commit -m "chore: normalize line endings"
 
-# After dead-code + doc cleanup:
-python -c "import main"            # imports still resolve
-python test_import.py             # existing import smoke test
-grep -rn "original_main" --include=*.py .   # only comments (or empty)
-git status                         # only intended deletions
+# After tracked-junk + doc cleanup:
+python -c "import main"                       # imports still resolve
+python tests/test_import.py 2>/dev/null || python test_import.py   # import smoke test
+git status                                    # only intended changes show
 
 # After DB untracking:
-# start the bot/api once → confirm it recreates the DBs and boots clean
+#   start the bot/api once -> confirm it recreates the DBs and boots clean
+git ls-files | grep -E '\.(db|log)$' || echo "no DB/log tracked ✓"
 
-# After Mini-App rename:
+# After Mini-App promotion:
 cd miniapp && npm install && npm run build && ls dist   # build succeeds
-# hit /miniapp in the running server → app loads
+#   hit /miniapp on the running server -> app loads
+
+# Final sanity:
+git ls-files | grep -E '^(_perm_test|.*\.db|.*\.log)$' || echo "clean ✓"
 ```
 
 Nothing here is irreversible: every deletion is a `git rm` recoverable with
-`git checkout <prev-commit> -- <path>` or by restoring the backup branch the
-script creates.
+`git checkout <prev-commit> -- <path>`, or restore the whole `backup/pre-cleanup-*`
+branch the script creates.

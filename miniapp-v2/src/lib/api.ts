@@ -4,6 +4,7 @@
  */
 import { env } from '@/config';
 import { initData } from '@/lib/telegram';
+import { DEV_PREVIEW, NO_MOCK, getMock } from '@/lib/devMock';
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -19,6 +20,17 @@ interface RequestOpts extends Omit<RequestInit, 'body'> {
 
 async function request<T>(path: string, opts: RequestOpts = {}): Promise<T> {
   const { body, timeoutMs = 12000, headers, ...rest } = opts;
+
+  // Dev preview: short-circuit known endpoints with sample data so the UI is
+  // fully browsable without a backend. Stripped from production builds.
+  if (DEV_PREVIEW) {
+    const mock = getMock((rest.method as string) || 'GET', path);
+    if (mock !== NO_MOCK) {
+      await new Promise((r) => setTimeout(r, 380)); // let skeletons breathe
+      return mock as T;
+    }
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 

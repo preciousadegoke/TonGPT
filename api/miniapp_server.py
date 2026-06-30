@@ -25,6 +25,52 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
+# RL-001: in-process per-IP limiter used as a FAIL-CLOSED fallback when Redis is
+# unavailable, so the mini-app API is never left completely unthrottled (the old
+# behaviour passed every request through when Redis was down).
+import threading as _threading
+_inproc_rl_lock = _threading.Lock()
+_inproc_rl_hits: Dict[str, list] = {}
+
+
+def _inproc_rate_allow(ip: str, limit_per_min: int) -> bool:
+    now = _time.time()
+    cutoff = now - 60
+    with _inproc_rl_lock:
+        q = _inproc_rl_hits.get(ip)
+        if q is None:
+            q = []
+            _inproc_rl_hits[ip] = q
+        # drop timestamps older than the window
+        drop = 0
+        for t in q:
+            if t >= cutoff:
+                break
+            drop += 1
+        if drop:
+            del q[:drop]
+        if len(q) >= limit_per_min:
+            return False
+        q.append(now)
+        # bound memory: occasionally evict empty buckets
+        if len(_inproc_rl_hits) > 10000:
+            for k in [k for k, v in list(_inproc_rl_hits.items())[:2000] if not v]:
+                _inproc_rl_hits.pop(k, None)
+        return True
+
+
+# RL-003: atomic INCR + first-time EXPIRE. Eliminates the window where a counter
+# could exist without a TTL (process dies between incr and expire → key stuck).
+_INCR_TTL_LUA = (
+    "local v = redis.call('INCR', KEYS[1])\n"
+    "if v == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end\n"
+    "return v"
+)
+
+
+def _redis_incr_ttl(rc, key: str, ttl: int) -> int:
+    return int(rc.eval(_INCR_TTL_LUA, 1, key, ttl))
+
 
 def verify_telegram_init_data(init_data: str) -> dict:
     """
@@ -46,9 +92,14 @@ def verify_telegram_init_data(init_data: str) -> dict:
     if not hmac.compare_digest(expected, hash_value):
         raise ValueError("Invalid initData signature")
 
-    if _time.time() - int(params.get("auth_date", 0)) > 86400:
+    # MINI-001: shorten the replay window. A captured initData was valid for 24h;
+    # default is now 1h (configurable). Shorter = smaller replay window.
+    max_age = int(os.getenv("INITDATA_MAX_AGE_SECONDS", "3600"))
+    if _time.time() - int(params.get("auth_date", 0)) > max_age:
         raise ValueError("initData expired")
 
+    if "user" not in params:
+        raise ValueError("initData missing user")
     return _json.loads(params["user"])
 
 @asynccontextmanager
@@ -92,56 +143,65 @@ def create_miniapp_server() -> FastAPI:
     from starlette.middleware.base import BaseHTTPMiddleware
     import time
     
+    from fastapi.responses import JSONResponse
+
+    def _inproc_guard(ip):
+        """Fail-closed in-process throttle (RL-001) when Redis can't be used."""
+        limit = int(os.getenv("MINIAPP_INPROC_RATE_LIMIT", "30"))
+        if not _inproc_rate_allow(ip, limit):
+            return JSONResponse(status_code=429, content={"detail": "Service busy — slow down."})
+        return None
+
     class IPRateLimitMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
-            # Only rate limit /api defaults
-            if request.url.path.startswith("/api/"):
-                ip = request.client.host if request.client else "127.0.0.1"
+            if not request.url.path.startswith("/api/"):
+                return await call_next(request)
+
+            ip = request.client.host if request.client else "127.0.0.1"
+            rc = None
+            try:
+                from utils.redis_conn import redis_client
+                rc = getattr(redis_client, "client", redis_client)
+            except Exception:
+                rc = None
+
+            # RL-001: Redis unavailable -> FAIL CLOSED to the in-process limiter
+            # rather than passing every request through unthrottled.
+            if not rc:
+                blocked = _inproc_guard(ip)
+                return blocked if blocked is not None else await call_next(request)
+
+            try:
+                # 1) IP ban check.
+                if rc.exists(f"ip_ban:{ip}"):
+                    return JSONResponse(status_code=403, content={"detail": "IP temporarily banned due to suspicious activity."})
+
+                # 2) Per-minute burst limit (atomic incr+TTL — RL-003).
+                burst_key = f"miniapp_burst:{ip}"
+                count = _redis_incr_ttl(rc, burst_key, 60)
+                if count > 60:
+                    logger.warning(f"BLOCKED Miniapp IP {ip} (rate limit exceeded)")
+                    return JSONResponse(status_code=429, content={"detail": "Slow down! Too many requests."})
+
+                # 3) Concurrency cap. Acquire (atomic incr+TTL), then guarantee
+                #    release in finally (RL-002: no leak even if a later call throws).
+                concurrency_key = f"active_conn:{ip}"
+                active = _redis_incr_ttl(rc, concurrency_key, 60)
                 try:
-                    from utils.redis_conn import redis_client
-                    rc = getattr(redis_client, "client", redis_client)
-                    if rc:
-                        # 1. IP Ban check
-                        ban_key = f"ip_ban:{ip}"
-                        if rc.exists(ban_key):
-                            from fastapi.responses import JSONResponse
-                            return JSONResponse(status_code=403, content={"detail": "IP temporarily banned due to suspicious activity."})
-                            
-                        # 2. Concurrency Check
-                        concurrency_key = f"active_conn:{ip}"
-                        current_active = rc.incr(concurrency_key)
-                        if current_active == 1:
-                            rc.expire(concurrency_key, 60) # Fail-safe TTL
-                        
-                        if current_active > 15: # Max 15 concurrent requests per IP
-                            rc.decr(concurrency_key)
-                            from fastapi.responses import JSONResponse
-                            return JSONResponse(status_code=429, content={"detail": "Too many concurrent connections from this IP."})
-                        
-                        try:
-                            # 3. IP burst tracking
-                            burst_key = f"miniapp_burst:{ip}"
-                            count = rc.incr(burst_key)
-                            if count == 1:
-                                rc.expire(burst_key, 60) # 60 seconds
-                            
-                            if count > 60: # Max 60 requests per minute per IP to miniapp
-                                logger.warning(f"BLOCKED Miniapp IP {ip} (Rate Limit Exceeded)")
-                                from fastapi.responses import JSONResponse
-                                # H-13: decrement BEFORE returning so counter doesn't leak
-                                return JSONResponse(status_code=429, content={"detail": "Slow down! Too many requests."})
-                                
-                            return await call_next(request)
-                        finally:
-                            try:
-                                rc.decr(concurrency_key)
-                            except Exception:
-                                pass
-                except Exception as e:
-                    logger.debug(f"IP Rate limit middleware error: {e}")
-            
-            return await call_next(request)
-            
+                    if active > 15:
+                        return JSONResponse(status_code=429, content={"detail": "Too many concurrent connections from this IP."})
+                    return await call_next(request)
+                finally:
+                    try:
+                        rc.decr(concurrency_key)
+                    except Exception:
+                        pass
+            except Exception as e:
+                # Redis errored mid-request -> fail closed to the in-process limiter.
+                logger.warning(f"IP rate limit Redis error; using in-process fallback: {e}")
+                blocked = _inproc_guard(ip)
+                return blocked if blocked is not None else await call_next(request)
+
     app.add_middleware(IPRateLimitMiddleware)
 
     # Mount static files for the mini-app.
@@ -425,46 +485,63 @@ async def authenticate_wallet(request: Request, data: dict):
         raise HTTPException(status_code=401, detail=str(e))
 
     telegram_id = tg_user["id"]
-    address = data.get("Address")
-    public_key = data.get("PublicKey")
-    proof_json = data.get("Proof")
-    state_init = data.get("StateInit")
-    
-    if not all([telegram_id, address, proof_json]):
+
+    # Accept both the front-end's lower_snake_case keys and legacy PascalCase.
+    def _field(*names):
+        for n in names:
+            v = data.get(n)
+            if v not in (None, ""):
+                return v
+        return None
+
+    address = _field("address", "Address")
+    public_key = _field("public_key", "publicKey", "PublicKey")
+    proof_raw = _field("proof", "Proof")
+    # StateInit is now REQUIRED — it is the trust anchor that binds the public
+    # key to the address (AUTH-001). TON Connect exposes it as walletStateInit.
+    state_init = _field("state_init", "stateInit", "StateInit", "walletStateInit")
+
+    if not all([telegram_id, address, proof_raw]):
         raise HTTPException(status_code=400, detail="Missing required fields: TelegramId, Address, Proof")
-    
-    # Block the dev bypass
-    if proof_json == "SKIP_VERIFICATION_DEV":
+    if not state_init:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing StateInit — wallet ownership cannot be verified without it.",
+        )
+
+    # Block any attempt to short-circuit verification with a sentinel string.
+    if isinstance(proof_raw, str) and proof_raw in ("SKIP_VERIFICATION_DEV", "VERIFIED_BY_PYTHON_SERVER"):
         raise HTTPException(status_code=403, detail="Proof verification cannot be skipped")
-    
-    # Parse proof
-    try:
-        proof = _json.loads(proof_json)
-    except _json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid proof format")
-    
-    # Validate proof structure
+
+    # TON Connect delivers `proof` as an object; tolerate a JSON-encoded string too.
+    if isinstance(proof_raw, dict):
+        proof = proof_raw
+    else:
+        try:
+            proof = _json.loads(proof_raw)
+        except (_json.JSONDecodeError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid proof format")
+
     required_fields = ["timestamp", "domain", "signature", "payload"]
     if not all(f in proof for f in required_fields):
         raise HTTPException(
             status_code=400,
-            detail=f"Proof must contain: {', '.join(required_fields)}"
+            detail=f"Proof must contain: {', '.join(required_fields)}",
         )
-    
-    # Verify timestamp (proof must be less than 5 minutes old)
+
+    # Timestamp: past-only with a small clock-skew allowance (no far-future proofs).
     import time
     proof_timestamp = int(proof["timestamp"])
     current_time = int(time.time())
-    if abs(current_time - proof_timestamp) > 300:
-        raise HTTPException(status_code=403, detail="Proof expired (older than 5 minutes)")
-    
-    # Verify nonce was generated by our server (if Redis available)
+    if proof_timestamp > current_time + 60 or (current_time - proof_timestamp) > 300:
+        raise HTTPException(status_code=403, detail="Proof expired or not yet valid")
+
+    # Anti-replay: the nonce must have been minted by us; consume it atomically.
     # NOTE: redis_client wraps sync redis.Redis — do NOT use await
     payload_nonce = proof.get("payload", "")
     try:
         from utils.redis_conn import redis_client
         if redis_client and redis_client.client:
-            # Atomic get-and-delete via Lua script to prevent TOCTOU nonce replay
             lua_script = """
             local val = redis.call('GET', KEYS[1])
             if val then
@@ -477,7 +554,7 @@ async def authenticate_wallet(request: Request, data: dict):
             if stored is None:
                 raise HTTPException(
                     status_code=403,
-                    detail="Invalid or expired proof payload. Reconnect wallet to try again."
+                    detail="Invalid or expired proof payload. Reconnect wallet to try again.",
                 )
         else:
             raise HTTPException(status_code=500, detail="Redis connection unavailable for validation")
@@ -486,107 +563,68 @@ async def authenticate_wallet(request: Request, data: dict):
     except Exception as e:
         logger.error(f"Redis nonce check failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error during nonce validation")
-    
-    # Verify Ed25519 signature (if nacl is available)
-    verification_passed = False
-    if public_key:
-        try:
-            import nacl.signing
-            import nacl.exceptions
-            
-            # TON Connect ton_proof signature format:
-            # message = "ton-proof-item-v2/" + address_workchain + address_hash + domain_len + domain + timestamp + payload
-            domain = proof["domain"]
-            domain_value = domain.get("value", "") if isinstance(domain, dict) else str(domain)
-            domain_len = domain.get("lengthBytes", len(domain_value)) if isinstance(domain, dict) else len(domain_value)
-            
-            # Build the message that was signed
-            # Prefix: "ton-proof-item-v2/"
-            prefix = b"ton-proof-item-v2/"
-            
-            # Parse address to get workchain and hash
-            # Raw address format in TON Connect is workchain:hash (hex)
-            addr_parts = address.split(":")
-            if len(addr_parts) == 2:
-                workchain = int(addr_parts[0]).to_bytes(4, byteorder='big', signed=True)
-                addr_hash = bytes.fromhex(addr_parts[1])
-            else:
-                # Address may be in different format — skip crypto verification
-                logger.warning(f"Unexpected address format: {address[:20]}...")
-                verification_passed = False
-                raise ValueError("Address not in raw format")
-            
-            # Build msg
-            domain_len_bytes = domain_len.to_bytes(4, byteorder='little')
-            timestamp_bytes = proof_timestamp.to_bytes(8, byteorder='little')
-            payload_bytes = payload_nonce.encode('utf-8')
-            
-            msg = (
-                prefix +
-                workchain +
-                addr_hash +
-                domain_len_bytes +
-                domain_value.encode('utf-8') +
-                timestamp_bytes +
-                payload_bytes
-            )
-            
-            # Hash the message
-            msg_hash = hashlib.sha256(msg).digest()
-            
-            # TON wraps with "ton-connect" prefix
-            ton_connect_prefix = b"\xff\xffton-connect"
-            full_msg = hashlib.sha256(ton_connect_prefix + msg_hash).digest()
-            
-            # Verify signature
-            signature = base64.b64decode(proof["signature"])
-            verify_key = nacl.signing.VerifyKey(bytes.fromhex(public_key))
-            verify_key.verify(full_msg, signature)
-            
-            verification_passed = True
-            logger.info(f"ton_proof signature verified for address {address[:20]}...")
-            
-        except nacl.exceptions.BadSignatureError:
-            logger.warning(f"Invalid ton_proof signature for address {address[:20]}...")
-            raise HTTPException(status_code=403, detail="Invalid wallet signature — ownership verification failed")
-        except ImportError:
-            raise RuntimeError(
-                "PyNaCl is required for wallet verification. "
-                "Install it: pip install PyNaCl"
-            )
-        except ValueError as ve:
-            logger.error(f"Could not parse address for crypto verification: {ve}")
-            raise HTTPException(status_code=400, detail="Invalid address format for verification")
-        except Exception as e:
-            logger.error(f"Unexpected error during ton_proof verification: {e}")
-            raise HTTPException(status_code=500, detail="Verification error")
-    else:
-        logger.warning("No public key provided — cannot verify signature")
-        raise HTTPException(status_code=400, detail="PublicKey is required for wallet verification")
-    
-    # Validate TON address format
-    from core.security import SecurityManager
-    security = SecurityManager()
-    if not security.validate_ton_address(address):
-        raise HTTPException(status_code=400, detail="Invalid TON address format")
-    
-    # Forward verified wallet to C# Engine
+
+    # ── Cryptographic ownership proof (AUTH-001 / AUTH-004) ──────────────────
+    # verify_ton_proof:
+    #   1) enforces hash(StateInit) == address  (binds the key set to the address)
+    #   2) reads the public key from the StateInit (NOT from the request)
+    #   3) verifies the Ed25519 signature with that StateInit-derived key
+    # and returns the canonical friendly address. Any failure → ValueError.
+    from core.security import verify_ton_proof, make_wallet_link_assertion
+
+    # Optional domain pinning (AUTH-002). Enforced when TONPROOF_ALLOWED_DOMAINS
+    # is set; otherwise we warn so misconfig is visible but linking still works.
+    allowed_domains = {d.strip() for d in os.getenv("TONPROOF_ALLOWED_DOMAINS", "").split(",") if d.strip()}
+    if not allowed_domains:
+        logger.warning("TONPROOF_ALLOWED_DOMAINS not set — domain pinning disabled")
+
+    try:
+        canonical_address = verify_ton_proof(
+            address=address,
+            proof=proof,
+            state_init=state_init,
+            allowed_domains=allowed_domains or None,
+            public_key=public_key,
+        )
+    except ValueError as ve:
+        logger.warning(f"ton_proof verification failed for user {telegram_id}: {ve}")
+        raise HTTPException(status_code=403, detail="Wallet ownership verification failed")
+    except Exception as e:  # noqa: BLE001 — crypto libs etc.
+        logger.error(f"Unexpected error verifying ton_proof: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Verification error")
+
+    logger.info(f"ton_proof verified; linking wallet for user {telegram_id}")
+
+    # ── Forward to the Engine with a short-lived signed assertion (ENG-001) ──
+    # The Engine no longer trusts any constant — it validates this HMAC, which
+    # only THIS server (holding WALLET_LINK_SIGNING_SECRET) can mint after a real
+    # proof. So even a holder of ENGINE_API_KEY cannot link a wallet on its own.
+    try:
+        assertion = make_wallet_link_assertion(telegram_id, canonical_address, ttl_seconds=60)
+    except RuntimeError as e:
+        logger.error(f"Cannot mint wallet-link assertion: {e}")
+        raise HTTPException(status_code=503, detail="Wallet linking temporarily unavailable")
+
     try:
         from services.engine_client import engine_client
         result = await engine_client._post("Wallet/auth", {
             "TelegramId": telegram_id,
-            "Address": address,
+            "Address": canonical_address,
             "PublicKey": public_key or "",
-            "Proof": "VERIFIED_BY_PYTHON_SERVER",
-            "StateInit": state_init or ""
+            "Proof": assertion,
+            "StateInit": state_init or "",
         })
-        if result.get("error"):
-            raise HTTPException(status_code=result.get("error", 500), detail=result.get("message", "Engine rejected wallet link"))
-        logger.info(f"Wallet {address[:20]}... linked to user {telegram_id}")
-        return {"status": "success", "message": "Wallet verified and linked", "verified": verification_passed}
     except Exception as e:
         logger.error(f"Failed to forward wallet auth to engine: {e}")
         raise HTTPException(status_code=500, detail="Failed to save wallet link")
+
+    if isinstance(result, dict) and result.get("error"):
+        status = result.get("error")
+        status = status if isinstance(status, int) else 502
+        raise HTTPException(status_code=status, detail=result.get("message", "Engine rejected wallet link"))
+
+    logger.info(f"Wallet linked to user {telegram_id}")
+    return {"status": "success", "message": "Wallet verified and linked", "verified": True}
 
 
 @miniapp.get("/api/user/consent-status")
@@ -688,9 +726,9 @@ async def create_stars_invoice(request: Request, body: dict):
         raise HTTPException(status_code=503, detail="Bot not ready")
 
     # 4. Create the invoice link.
-    #    IMPORTANT: Telegram Stars (XTR) require an EMPTY provider_token.
-    #    amount is in the smallest Stars unit (price_stars * 100), matching the
-    #    bot's existing send_invoice path for consistency.
+    #    IMPORTANT: Telegram Stars (XTR) require an EMPTY provider_token, and the
+    #    amount is the WHOLE number of Stars — NOT ×100 (see core/pricing.py XTR
+    #    rule). This matches the bot's send_invoice path so both charge identically.
     from aiogram.types import LabeledPrice
     logger.info(f"Creating Stars invoice for user={tg_user.get('id')} plan={plan_key}")
     try:
@@ -700,7 +738,7 @@ async def create_stars_invoice(request: Request, body: dict):
             payload=f"premium_{plan_key}",
             provider_token="",
             currency="XTR",
-            prices=[LabeledPrice(label=plan["name"], amount=plan["price_stars"] * 100)],
+            prices=[LabeledPrice(label=plan["name"], amount=plan["price_stars"])],
         )
     except Exception as e:
         logger.error(f"create_stars_invoice failed for plan={plan_key}: {e}")

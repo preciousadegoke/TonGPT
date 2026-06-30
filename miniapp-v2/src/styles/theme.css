@@ -1,39 +1,90 @@
 /* ──────────────────────────────────────────────────────────────────────────
-   Design tokens. Defaults are TonGPT's premium dark palette. At runtime,
-   useTheme() overrides --bg/--surface/--text/etc from Telegram themeParams,
-   so the app matches the user's client (dark OR light) instantly.
+   TonGPT design tokens — 2026 premium system.
+
+   Philosophy: Linear's restraint + Stripe's clarity + Apple's drama.
+   Base tokens (--bg/--surface/--text/--hint/--accent) are overridden at runtime
+   by useTheme() from Telegram themeParams, so the whole app re-themes instantly.
+   Everything derived (elevation, gradients, rings, glass) is built with
+   color-mix() FROM those base tokens, so derived tokens stay correct no matter
+   what palette Telegram hands us. No hard-coded greys downstream.
    ────────────────────────────────────────────────────────────────────────── */
 :root {
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  /* Type */
+  --font-sans: 'Inter', 'Inter var', -apple-system, BlinkMacSystemFont, 'SF Pro Text',
+    'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-feature: 'cv02' 1, 'cv03' 1, 'cv04' 1, 'cv11' 1, 'ss01' 1, 'liga' 1, 'calt' 1;
+  --tracking-tight: -0.02em;
+  --tracking-tighter: -0.035em;
 
-  /* TON brand */
-  --accent: #0098ea;
+  /* Brand */
+  --accent: #2b9bf4;          /* TON blue, slightly brightened for contrast */
+  --accent-2: #0a84ff;        /* deep companion for gradients */
   --accent-fg: #ffffff;
   --gold: #f5b50a;
   --positive: #2ecc71;
   --negative: #ff4d4f;
 
-  /* Dark defaults (overridden by Telegram themeParams on load) */
-  --bg: #000000;
-  --surface: #12141a;
-  --surface-2: #1b1e27;
-  --border: rgba(255, 255, 255, 0.08);
-  --text: #ffffff;
-  --hint: #8a8f99;
+  /* Dark defaults — a near-black with a faint cool cast reads more premium than
+     dead #000, and gives surfaces room to elevate. Telegram may override. */
+  --bg: #07080c;
+  --surface: #101218;
+  --surface-2: #181b23;
+  --border: rgba(255, 255, 255, 0.07);
+  --text: #f5f6f8;
+  --hint: #8b909c;
+
+  /* ── Derived (auto-rethemes via color-mix) ─────────────────────────────── */
+  /* Elevated surfaces for layered depth */
+  --surface-raised: color-mix(in srgb, var(--surface) 92%, white 8%);
+  --surface-sunken: color-mix(in srgb, var(--surface) 88%, black 12%);
+  --border-strong: color-mix(in srgb, var(--text) 16%, transparent);
+  --hairline: color-mix(in srgb, var(--text) 9%, transparent);
+
+  /* Accent family */
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-softer: color-mix(in srgb, var(--accent) 8%, transparent);
+  --accent-ring: color-mix(in srgb, var(--accent) 45%, transparent);
+  --accent-grad: linear-gradient(135deg, var(--accent), var(--accent-2));
+  --accent-grad-soft: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent) 22%, var(--surface)),
+    var(--surface) 70%
+  );
+
+  /* Glass for sticky chrome (tab bar, headers) */
+  --glass: color-mix(in srgb, var(--bg) 72%, transparent);
+
+  /* Elevation — soft, layered, low-spread (Linear-style) */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.18), 0 1px 1px rgba(0, 0, 0, 0.12);
+  --shadow-md: 0 4px 14px -4px rgba(0, 0, 0, 0.35), 0 2px 6px -2px rgba(0, 0, 0, 0.22);
+  --shadow-lg: 0 18px 48px -12px rgba(0, 0, 0, 0.55), 0 6px 18px -8px rgba(0, 0, 0, 0.35);
+  --shadow-accent: 0 12px 36px -10px color-mix(in srgb, var(--accent) 55%, transparent);
+
+  /* Motion — one shared spring vocabulary */
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
   /* Telegram safe-area insets (set by useTheme from viewport events) */
   --tg-top: 0px;
   --tg-bottom: 0px;
 }
 
-/* Light scheme defaults — used if Telegram reports light and before params apply */
+/* Light scheme defaults — used if Telegram reports light and before params apply.
+   A warm-neutral off-white (not pure #fff) is gentler and more premium. */
 html.light {
-  --bg: #ffffff;
-  --surface: #f4f5f7;
-  --surface-2: #eaecf0;
-  --border: rgba(0, 0, 0, 0.08);
-  --text: #0d0d0d;
-  --hint: #707579;
+  --bg: #fbfbfd;
+  --surface: #ffffff;
+  --surface-2: #f1f3f7;
+  --border: rgba(10, 12, 20, 0.08);
+  --text: #0b0c10;
+  --hint: #6a7180;
+
+  --surface-raised: #ffffff;
+  --surface-sunken: color-mix(in srgb, var(--surface) 94%, black 6%);
+  --glass: color-mix(in srgb, #ffffff 70%, transparent);
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 1px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 6px 20px -6px rgba(16, 24, 40, 0.12), 0 2px 6px -2px rgba(16, 24, 40, 0.07);
+  --shadow-lg: 0 24px 56px -16px rgba(16, 24, 40, 0.18), 0 8px 20px -10px rgba(16, 24, 40, 0.12);
 }
 
 * {
@@ -48,11 +99,22 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
+  font-feature-settings: var(--font-feature);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   overscroll-behavior-y: none;
 }
 
 #app {
   height: 100%;
+}
+
+/* Tighten tracking on display type globally for an editorial, Apple-like feel */
+h1,
+h2,
+h3 {
+  letter-spacing: var(--tracking-tight);
 }
 
 /* Respect reduced-motion users */
@@ -61,7 +123,9 @@ body {
   *::before,
   *::after {
     animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -79,10 +143,10 @@ body {
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(255, 255, 255, 0.06),
+    color-mix(in srgb, var(--text) 7%, transparent),
     transparent
   );
-  animation: shimmer 1.4s infinite;
+  animation: shimmer 1.5s infinite;
 }
 @keyframes shimmer {
   100% {
@@ -94,5 +158,5 @@ body {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 8px;
+  border-radius: 10px;
 }

@@ -32,6 +32,20 @@ users will simply pay via the cheaper channel.
 
 TON amounts are fixed-per-tier (not dynamically re-quoted) so the user always
 knows the exact amount to send and on-chain validation is unambiguous.
+
+TELEGRAM STARS (XTR) AMOUNT RULE — READ BEFORE TOUCHING ANY INVOICE CODE
+-----------------------------------------------------------------------
+Telegram Stars use the currency code "XTR". For XTR, the LabeledPrice ``amount``
+is the WHOLE NUMBER OF STARS — it is NOT multiplied by 100.
+
+    ✅ correct:   LabeledPrice(label=..., amount=plan["price_stars"])   # 1335 Stars
+    ❌ wrong:     LabeledPrice(label=..., amount=plan["price_stars"]*100)  # 133,500 Stars (100×)
+
+The ×100 ("smallest subunit") convention applies ONLY to fiat currencies like
+USD, where amount=100 means $1.00. XTR has no subunit. Likewise the amount
+returned in ``successful_payment.total_amount`` for an XTR payment is the whole
+Star count, so it must be compared directly to ``price_stars`` (no ``// 100``).
+Use ``expected_stars(plan_key)`` below as the single source for that value.
 """
 
 from __future__ import annotations
@@ -141,6 +155,18 @@ def expected_nanoton(plan_key: str) -> Optional[int]:
     return int(plan["price_nanoton"]) if plan else None
 
 
+def expected_stars(plan_key: str) -> Optional[int]:
+    """Exact Telegram Stars (XTR) amount required for a tier, or None if unknown.
+
+    This is the value to pass DIRECTLY as the LabeledPrice ``amount`` for an XTR
+    invoice — do NOT multiply by 100 (see the XTR amount rule in the module
+    docstring). It is also the value ``successful_payment.total_amount`` must be
+    compared against for an XTR payment.
+    """
+    plan = PLANS.get(plan_key)
+    return int(plan["price_stars"]) if plan else None
+
+
 def duration_days(plan_key: str) -> int:
     plan = PLANS.get(plan_key)
     return int(plan["duration_days"]) if plan else 30
@@ -153,5 +179,6 @@ __all__ = [
     "plan_to_engine",
     "is_valid_plan",
     "expected_nanoton",
+    "expected_stars",
     "duration_days",
 ]

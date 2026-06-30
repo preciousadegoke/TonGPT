@@ -99,8 +99,19 @@ set the Mini-App URL in **@BotFather → Bot Settings → Menu Button / Web App*
 - [ ] Balance loads (or shows "Unavailable" gracefully)
 - [ ] Tonscan link + copy + disconnect work
 
+**Design & UX (v2.1 premium refresh — see [DESIGN.md](./DESIGN.md))**
+- [ ] Pricing reads as the hero: gradient headline, "Most popular" card clearly dominant, cards reveal on scroll
+- [ ] Tier card CTAs open checkout; segmented TON/Stars thumb springs between rails
+- [ ] Checkout success shows pop+ping+crown; error always offers retry / switch-to-Stars
+- [ ] Tab bar uses glass chrome + crisp icons; active state tinted; haptics on tab change
+- [ ] Inter loads but app paints instantly on the system fallback (no layout shift)
+- [ ] `prefers-reduced-motion` ON → reveals/counters/animations snap, nothing janks
+- [ ] Dark **and** light Telegram themes both look correct (derived tokens re-theme)
+- [ ] No emoji-as-icon regressions; numbers use tabular figures and align
+
 **Quality**
 - [ ] `npm run typecheck` clean
+- [ ] `npm run build` succeeds; `tonconnect` stays its own chunk (`npm run analyze`)
 - [ ] Lighthouse (mobile) performance ≥ 90 on `dist/`
 - [ ] Error boundary catches render crashes with a Reload action
 - [ ] Run the full [TESTING.md](./TESTING.md) checklist inside real Telegram

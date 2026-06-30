@@ -44,8 +44,13 @@ export interface Plan {
   features: string[];
 }
 
-// NOTE: priceTon / priceStars MUST equal core/pricing.py (the backend's single
-// source of truth). Mismatches here would charge the wrong amount.
+// NOTE: priceTon / priceStars here are DISPLAY values only. The actual charge is
+// always minted server-side from core/pricing.py (POST /subscription/stars-invoice),
+// so the amount billed is correct even if this list drifts — but a mismatch would
+// show the user a price that differs from what they're charged. These values MUST
+// therefore equal core/pricing.py exactly. priceStars is the WHOLE number of
+// Telegram Stars (XTR has no subunit — never ×100). Ideally fetch these from a
+// /subscription/pricing endpoint so there is literally one source.
 export const PLANS: Plan[] = [
   {
     id: 'starter',

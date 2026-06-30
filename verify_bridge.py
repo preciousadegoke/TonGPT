@@ -10,16 +10,26 @@ async def verify_bridge():
     status = await engine_client.get_user_status(user_id)
     print(f"✅ Status: {status}")
     
-    # 2. Try to create an invoice
-    print("Creating test invoice...")
-    invoice = await engine_client.create_invoice(user_id, 5.0)
-    print(f"✅ Invoice: {invoice}")
-    
-    # 3. Upgrade user
-    print("Upgrading user to Pro...")
-    success = await engine_client.upgrade_user(user_id, "Pro")
-    print(f"✅ Upgrade Success: {success}")
-    
+    # 2. Activate Pro via the ONE canonical path (amount-validated, idempotent).
+    #    Pro = 30 TON canonically, so we pass a matching amount_ton; provider "ton".
+    print("Activating Pro via Payment/complete...")
+    import time as _t
+    result = await engine_client.complete_payment(
+        telegram_id=user_id,
+        plan="Pro",
+        provider="ton",
+        external_id=f"bridge-test-{int(_t.time())}",
+        duration_days=30,
+        amount_ton=30.0,
+    )
+    print(f"✅ Activation: {result}")
+
+    # 3. (Underpayment should be rejected) — uncomment to test:
+    # bad = await engine_client.complete_payment(
+    #     telegram_id=user_id, plan="Elite", provider="ton",
+    #     external_id=f"bridge-underpay-{int(_t.time())}", amount_ton=1.0)
+    # print(f"Underpay (expect permanent/4xx): {bad}")
+
     # 4. Check status again
     status = await engine_client.get_user_status(user_id)
     print(f"✅ New Status: {status}")

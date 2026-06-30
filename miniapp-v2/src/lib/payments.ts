@@ -78,13 +78,20 @@ export async function payWithStars(plan: Plan): Promise<CheckoutResult> {
       { plan: plan.id },
     );
 
+    // No invoice URL (e.g. dev preview, or a misconfigured backend) — don't
+    // open a blank tab; surface a pending/no-op state instead.
+    if (!invoice_url) return { status: 'pending' };
+
     if (!tg) {
       window.open(invoice_url, '_blank');
       return { status: 'pending' };
     }
 
+    // Capture into a local const so the narrowing (tg is defined) holds inside
+    // the Promise callback closure — TS widens module bindings across closures.
+    const webApp = tg;
     return await new Promise<CheckoutResult>((resolve) => {
-      tg.openInvoice(invoice_url, async (status) => {
+      webApp.openInvoice(invoice_url, async (status) => {
         if (status === 'paid') {
           await refreshUserStatus();
           haptic.notify('success');

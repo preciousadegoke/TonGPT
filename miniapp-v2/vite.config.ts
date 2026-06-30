@@ -1,9 +1,17 @@
 import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { fileURLToPath, URL } from 'node:url';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  // Map "@/..." to "src/..." for the bundler. tsconfig `paths` only covers
+  // type-checking; Rollup needs this alias to actually resolve the imports.
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
   plugins: [
     preact(),
     VitePWA({

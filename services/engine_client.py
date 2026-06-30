@@ -10,6 +10,13 @@ logger = logging.getLogger(__name__)
 
 ENGINE_API_KEY = os.getenv("ENGINE_API_KEY", "")
 
+# PAY-011: bound every Engine HTTP call so a hung Engine can't stall the caller
+# (e.g. the TON monitor, which awaits activation serially). Default 10s total.
+try:
+    _ENGINE_TIMEOUT = aiohttp.ClientTimeout(total=float(os.getenv("ENGINE_HTTP_TIMEOUT", "10")))
+except (TypeError, ValueError):
+    _ENGINE_TIMEOUT = aiohttp.ClientTimeout(total=10)
+
 
 class EngineServerError(Exception):
     """Raised when the Engine API returns a 5xx server error."""
@@ -27,6 +34,10 @@ class EngineClient:
             self.base_url = base_url.rstrip('/')
         else:
             self.base_url = os.getenv("ENGINE_URL", "http://localhost:5090/api").rstrip('/')
+        # REL-002: one shared session (connection pooling, keep-alive) instead of a
+        # new ClientSession per request. Created lazily on first use inside the
+        # running event loop; closed via close() on shutdown.
+        self._session: Optional[aiohttp.ClientSession] = None
 
     def _headers(self) -> Dict[str, str]:
         """Headers for Engine API (API key is always required)."""
@@ -35,52 +46,69 @@ class EngineClient:
             "Content-Type": "application/json",
         }
 
-    async def _get(self, endpoint: str) -> Optional[Dict[str, Any]]:
-        """Internal helper for GET requests"""
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.get(f"{self.base_url}/{endpoint}", headers=self._headers()) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    if response.status == 404:
-                        return None
-                    if 500 <= response.status < 600:
-                        text = await response.text()
-                        logger.error("Engine API GET %s failed with %s: %s", endpoint, response.status, text)
-                        raise EngineServerError(f"Engine GET {endpoint} -> {response.status}")
-                    logger.warning(f"Engine API GET {endpoint} failed: {response.status}")
-                    return {}
-            except EngineServerError:
-                raise
-            except Exception as e:
-                logger.error(f"Engine API connection failed: {e}")
-                raise EngineServerError("Engine unreachable") from e
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Return the shared session, (re)creating it if missing or closed."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(timeout=_ENGINE_TIMEOUT)
+        return self._session
 
+    async def close(self) -> None:
+        """Close the shared session. Call on application shutdown."""
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
+
+    async def _get(self, endpoint: str, extra_headers: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
+        """Internal helper for GET requests"""
+        headers = self._headers()
+        if extra_headers:
+            headers.update(extra_headers)
+        session = await self._get_session()
+        try:
+            async with session.get(f"{self.base_url}/{endpoint}", headers=headers) as response:
+                if response.status == 200:
+                    return await response.json()
+                if response.status == 404:
+                    return None
+                if 500 <= response.status < 600:
+                    text = await response.text()
+                    logger.error("Engine API GET %s failed with %s: %s", endpoint, response.status, text)
+                    raise EngineServerError(f"Engine GET {endpoint} -> {response.status}")
+                logger.warning(f"Engine API GET {endpoint} failed: {response.status}")
+                return {}
+        except EngineServerError:
+            raise
+        except Exception as e:
+            logger.error(f"Engine API connection failed: {e}")
+            raise EngineServerError("Engine unreachable") from e
 
     async def _post(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Internal helper for POST requests"""
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.post(f"{self.base_url}/{endpoint}", json=data, headers=self._headers()) as response:
-                    if response.status in [200, 201]:
-                        return await response.json()
+        session = await self._get_session()
+        try:
+            async with session.post(f"{self.base_url}/{endpoint}", json=data, headers=self._headers()) as response:
+                if response.status in [200, 201]:
+                    return await response.json()
 
-                    error_text = await response.text()
-                    logger.warning(f"Engine API POST {endpoint} failed: {response.status} - {error_text}")
-                    return {"error": response.status, "message": error_text}
-            except Exception as e:
-                logger.error(f"Engine API connection failed: {e}")
-                return {"error": "connection_failed"}
+                error_text = await response.text()
+                logger.warning(f"Engine API POST {endpoint} failed: {response.status} - {error_text}")
+                return {"error": response.status, "message": error_text}
+        except Exception as e:
+            logger.error(f"Engine API connection failed: {e}")
+            return {"error": "connection_failed"}
 
-    async def _delete(self, endpoint: str) -> bool:
+    async def _delete(self, endpoint: str, extra_headers: Optional[Dict[str, str]] = None) -> bool:
         """Internal helper for DELETE requests. Returns True if status 200."""
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.delete(f"{self.base_url}/{endpoint}", headers=self._headers()) as response:
-                    return response.status == 200
-            except Exception as e:
-                logger.error(f"Engine API DELETE {endpoint} failed: {e}")
-                return False
+        headers = self._headers()
+        if extra_headers:
+            headers.update(extra_headers)
+        session = await self._get_session()
+        try:
+            async with session.delete(f"{self.base_url}/{endpoint}", headers=headers) as response:
+                return response.status == 200
+        except Exception as e:
+            logger.error(f"Engine API DELETE {endpoint} failed: {e}")
+            return False
 
     # ==========================================
     # User Management
@@ -103,13 +131,36 @@ class EngineClient:
         """Get user details by Telegram ID"""
         return await self._get(f"User/{telegram_id}")
 
+    @staticmethod
+    def _user_action_header(telegram_id: int, action: str) -> Dict[str, str]:
+        """Mint the SEC-001 per-user assertion the Engine requires for sensitive
+        GDPR actions. Best-effort: if the signing secret is unset we send nothing
+        and the Engine falls back to its configured behaviour (warn/allow)."""
+        try:
+            from core.security import make_user_action_assertion
+            return {"X-User-Assertion": make_user_action_assertion(telegram_id, action)}
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not mint user-action assertion (%s): %s", action, e)
+            return {}
+
     async def export_user_data(self, telegram_id: int) -> Optional[Dict[str, Any]]:
-        """Export all user data (GDPR data portability). Returns dict or None."""
-        return await self._get(f"User/export/{telegram_id}")
+        """Export all user data (GDPR data portability). Returns dict or None.
+
+        Bound to ``telegram_id`` via a signed assertion (SEC-001) so a leaked API
+        key alone cannot export an arbitrary user's data.
+        """
+        return await self._get(
+            f"User/export/{telegram_id}",
+            extra_headers=self._user_action_header(telegram_id, "export"),
+        )
 
     async def delete_user_data(self, telegram_id: int) -> bool:
-        """Delete or anonymize user data (GDPR right to erasure)."""
-        return await self._delete(f"User/data/{telegram_id}")
+        """Delete or anonymize user data (GDPR right to erasure). Bound to
+        ``telegram_id`` via a signed assertion (SEC-001)."""
+        return await self._delete(
+            f"User/data/{telegram_id}",
+            extra_headers=self._user_action_header(telegram_id, "delete"),
+        )
 
     # ==========================================
     # Chat & Context
@@ -174,39 +225,6 @@ class EngineClient:
             "expiry": result.get("Expiry") or result.get("expiry"),
         }
 
-    async def record_payment(self, telegram_id: str, plan: str, provider: str, external_id: str = None) -> Optional[str]:
-        """Record a completed payment. Returns payment_id (guid string) for use in upgrade_user.
-
-        NOTE: For new code prefer :meth:`complete_payment`, which records the
-        payment AND activates the subscription atomically in one transaction.
-        """
-        data = {
-            "telegramId": str(telegram_id),
-            "plan": plan,
-            "provider": provider,
-            "externalId": external_id or "",
-        }
-        result = await self._post("Payment/record", data)
-        if "error" in result:
-            return None
-        pid = result.get("paymentId")
-        return str(pid) if pid else None
-
-    async def upgrade_user(self, telegram_id: str, plan: str, payment_record_id: str = None) -> bool:
-        """Upgrade user plan. Requires payment_record_id from record_payment (payment verification).
-
-        NOTE: For new code prefer :meth:`complete_payment`, which records the
-        payment AND activates the subscription atomically in one transaction.
-        """
-        payload = {
-            "telegramId": str(telegram_id),
-            "plan": plan,
-        }
-        if payment_record_id:
-            payload["paymentRecordId"] = payment_record_id
-        result = await self._post("Subscription/upgrade", payload)
-        return result.get("status") == "Success"
-
     async def complete_payment(
         self,
         telegram_id: Any,
@@ -215,23 +233,26 @@ class EngineClient:
         external_id: str,
         duration_days: int = 30,
         amount_ton: float = 0.0,
+        amount_stars: int = 0,
         max_attempts: int = 3,
     ) -> Dict[str, Any]:
         """Atomically record a payment AND activate the subscription (Postgres SoT).
 
-        This is the canonical, reliable activation path. The C# endpoint uses the
-        unique index on (ExternalId, Provider) as the single idempotency
-        authority, so calling this repeatedly with the same external_id is
-        ALWAYS safe -- duplicates return already_processed=True without
-        double-activating. That property is what lets the background
-        reconciliation queue retry freely.
+        This is the ONE canonical activation path. The C# endpoint:
+          * validates the paid amount against the canonical price (so a free or
+            underpaid activation is impossible — pass the real ``amount_ton`` for
+            TON providers and ``amount_stars`` for telegram_stars), and
+          * uses the unique index on (ExternalId, Provider) as the single
+            idempotency authority, so calling this repeatedly with the same
+            external_id is ALWAYS safe -- duplicates return already_processed=True
+            without double-activating. That is what lets the durable queue retry.
 
         Returns a normalized dict:
             ok                 -- True if Postgres confirmed activation
             already_processed  -- True if this was a duplicate
             status             -- "Activated" / "AlreadyProcessed"
             payment_id, plan, expiry
-            permanent          -- True => do NOT retry/queue (4xx)
+            permanent          -- True => do NOT retry/queue (4xx, e.g. underpayment)
             error              -- present when ok is False
         Never raises.
         """
@@ -242,6 +263,7 @@ class EngineClient:
             "externalId": external_id or "",
             "durationDays": int(duration_days),
             "amountTon": float(amount_ton),
+            "amountStars": int(amount_stars),
         }
         last_error: Any = None
         for attempt in range(1, max_attempts + 1):
@@ -283,23 +305,10 @@ class EngineClient:
         )
         return {"ok": False, "permanent": False, "error": last_error or "unreachable"}
 
-    async def activate_subscription(
-        self, payment_id: str, user_id: Any, plan: str, duration_days: int = 30
-    ) -> bool:
-        """Activate a subscription for an ALREADY-recorded payment (by paymentId).
-
-        Idempotent on the C# side (guarded by an activity-log marker), so it is
-        safe to retry. Prefer :meth:`complete_payment` for the live payment flow;
-        this exists for the two-step record->activate path and admin tooling.
-        """
-        payload = {
-            "telegramId": str(user_id),
-            "plan": plan,
-            "paymentRecordId": payment_id,
-            "durationDays": int(duration_days),
-        }
-        result = await self._post("Subscription/upgrade", payload)
-        return result.get("status") == "Success"
+    # NOTE: record_payment(), upgrade_user() and activate_subscription() were
+    # REMOVED. They drove the deleted, amount-blind /Payment/record and
+    # /Subscription/upgrade endpoints. The single activation path is
+    # complete_payment() above.
 
     # ==========================================
     # Analytics & Logging

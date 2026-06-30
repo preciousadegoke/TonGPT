@@ -72,8 +72,15 @@ def is_testnet() -> bool:
 
 
 def monitored_wallet() -> str:
-    """The single wallet users send TON to. Empty => path disabled."""
-    return os.getenv("MONITORED_WALLET_ADDRESS", "").strip()
+    """The single wallet users send TON to. Empty => path disabled.
+
+    CFG-DRIFT-001: main.py requires PAYMENT_WALLET_ADDRESS, so accept that as a
+    fallback — setting the one required var now also configures the monitor
+    (previously this read only MONITORED_WALLET_ADDRESS and silently stayed off).
+    """
+    return (os.getenv("MONITORED_WALLET_ADDRESS")
+            or os.getenv("PAYMENT_WALLET_ADDRESS")
+            or "").strip()
 
 
 def tolerance() -> float:
@@ -258,6 +265,8 @@ async def activate_from_payment(
             "external_id": external_id,
             "duration_days": duration_days(plan_key),
             "plan_key": plan_key,
+            # Carry the paid amount so the queue drain passes the Engine's amount
+            "amount_ton": amount_nanoton / 1e9,  # validation (PAY-001).
         })
         log.warning("ton_payment_queued", user_id=user_id, plan=plan_key, external_id=external_id)
         return "queued"
@@ -267,6 +276,31 @@ async def activate_from_payment(
             user_id=user_id, plan=plan_key, external_id=external_id, err=str(e),
         )
         return "failed"
+
+
+async def _notify_underpaid(user_id: int, plan_key: str, received_nanoton: int) -> None:
+    """Best-effort notice when a TON transfer is below the plan price (PAY-010).
+    The funds are received but no subscription is granted, so the user MUST be
+    told rather than left wondering."""
+    try:
+        from core.bot_instance import get_bot
+        bot = get_bot()
+        if not bot:
+            return
+        name = PLANS.get(plan_key, {}).get("name", "your plan")
+        expected = expected_nanoton(plan_key) or 0
+        await bot.send_message(
+            user_id,
+            f"⚠️ <b>Payment received but underpaid</b>\n\n"
+            f"We received <b>{received_nanoton / 1e9:.4f} TON</b> for <b>{name}</b>, but it "
+            f"requires at least <b>{expected / 1e9:.2f} TON</b>. Your subscription was "
+            f"<b>NOT</b> activated.\n\n"
+            f"Please send the correct amount with the exact memo, or contact "
+            f"@TonGPT_Support to recover this payment.",
+            parse_mode="HTML",
+        )
+    except Exception as e:  # noqa: BLE001
+        log.debug("ton_underpaid_notify_failed", err=str(e), user_id=user_id)
 
 
 async def _notify_user(user_id: int, plan_key: str) -> None:
@@ -289,8 +323,13 @@ async def _notify_user(user_id: int, plan_key: str) -> None:
 # --------------------------------------------------------------------------- #
 # On-chain monitoring (TONAPI). httpx imported lazily so tests don't need it.
 # --------------------------------------------------------------------------- #
-async def fetch_incoming_events(limit: int = 50) -> List[Dict[str, Any]]:
-    """Fetch recent events for the monitored wallet. Returns [] on any error."""
+async def fetch_incoming_events(limit: int = 50, before_lt: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Fetch a page of events for the monitored wallet (newest first).
+
+    ``before_lt`` pages backwards: TONAPI returns events with lt < before_lt, so
+    passing the oldest lt of the previous page yields the next older page. Returns
+    [] on any error.
+    """
     import httpx
 
     addr = monitored_wallet()
@@ -301,14 +340,49 @@ async def fetch_incoming_events(limit: int = 50) -> List[Dict[str, Any]]:
     api_key = os.getenv("TONAPI_KEY")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    params: Dict[str, Any] = {"limit": limit}
+    if before_lt is not None:
+        params["before_lt"] = int(before_lt)
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url, params={"limit": limit}, headers=headers)
+            resp = await client.get(url, params=params, headers=headers)
             resp.raise_for_status()
             return resp.json().get("events", []) or []
     except Exception as e:  # noqa: BLE001
         log.warning("ton_fetch_events_failed", err=str(e))
         return []
+
+
+# Best-effort high-water mark of the newest processed event lt. Lets each poll
+# stop as soon as it reaches already-seen territory. If Redis is unavailable we
+# simply fall back to bounded pagination (and Engine idempotency dedups anyway).
+def _get_high_water_lt() -> Optional[int]:
+    r = _redis()
+    if not r:
+        return None
+    try:
+        v = r.get("ton_monitor_high_lt")
+        return int(v) if v else None
+    except Exception:
+        return None
+
+
+def _set_high_water_lt(lt: int) -> None:
+    r = _redis()
+    if not r:
+        return
+    try:
+        r.set("ton_monitor_high_lt", str(int(lt)))
+    except Exception:
+        pass
+
+
+def _event_lt(ev: Dict[str, Any]) -> Optional[int]:
+    try:
+        lt = ev.get("lt")
+        return int(lt) if lt is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def extract_transfers(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -321,7 +395,12 @@ def extract_transfers(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for ev in events:
         event_id = ev.get("event_id") or ev.get("eventId")
-        for action in ev.get("actions", []) or []:
+        lt = _event_lt(ev)
+        # ``idx`` is the action's position within the event. One event can carry
+        # MULTIPLE TonTransfers (e.g. batched), so the per-transfer idempotency
+        # key MUST include it — keying on event_id alone merged/lost a second
+        # payer's transfer (PAY-004).
+        for idx, action in enumerate(ev.get("actions", []) or []):
             if (action.get("type") or "").lower() != "tontransfer":
                 continue
             status = (action.get("status") or "ok").lower()
@@ -332,24 +411,19 @@ def extract_transfers(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             amount = tt.get("amount")
             if comment is None or amount is None:
                 continue
-            out.append({"event_id": event_id, "comment": comment, "amount": amount})
+            out.append({"event_id": event_id, "idx": idx, "lt": lt, "comment": comment, "amount": amount})
     return out
 
 
-async def process_events_once() -> int:
-    """Single monitoring pass. Returns the number of NEW activations."""
-    if not is_configured():
-        return 0
-
-    events = await fetch_incoming_events()
-    transfers = extract_transfers(events)
+async def _process_one_event(ev: Dict[str, Any]) -> int:
+    """Process every TonTransfer in a single event. Returns NEW activations."""
     activated = 0
-
-    for tr in transfers:
+    for tr in extract_transfers([ev]):
         event_id = tr["event_id"]
         if not event_id:
             continue
-        external_id = f"ton:{event_id}"
+        # Per-transfer idempotency key (PAY-004): event_id + action index.
+        external_id = f"ton:{event_id}:{tr['idx']}"
         if _already_processed(external_id):
             continue
 
@@ -369,8 +443,9 @@ async def process_events_once() -> int:
                 received=amount_nanoton, expected=expected_nanoton(parsed["plan_key"]),
                 external_id=external_id,
             )
-            # Mark processed so we don't keep re-evaluating; the user must re-pay.
-            _mark_processed(external_id)
+            # PAY-010: tell the user so an underpayment isn't silently swallowed.
+            await _notify_underpaid(parsed["user_id"], parsed["plan_key"], amount_nanoton)
+            _mark_processed(external_id)  # don't re-evaluate; user must re-pay
             continue
 
         status = await activate_from_payment(
@@ -380,6 +455,57 @@ async def process_events_once() -> int:
             _mark_processed(external_id)  # queue owns it now if "queued"
         if status == "activated":
             activated += 1
+    return activated
+
+
+async def process_events_once() -> int:
+    """Single monitoring pass with bounded back-pagination so a burst of more
+    than one page of transfers is never missed (PAY-007).
+
+    Pages backwards from newest until it reaches the previous high-water lt
+    (already-seen territory), the end of history, or a safety cap of pages.
+    Returns the number of NEW activations.
+    """
+    if not is_configured():
+        return 0
+
+    page_limit = 50
+    max_pages = int(os.getenv("TON_MONITOR_MAX_PAGES", "10"))  # cap = 10*50 = 500/poll
+    high_water = _get_high_water_lt()
+
+    activated = 0
+    newest_lt: Optional[int] = None
+    before_lt: Optional[int] = None
+    reached_known = False
+
+    for _page in range(max_pages):
+        events = await fetch_incoming_events(limit=page_limit, before_lt=before_lt)
+        if not events:
+            break
+
+        for ev in events:
+            ev_lt = _event_lt(ev)
+            if newest_lt is None and ev_lt is not None:
+                newest_lt = ev_lt
+            # Stop once we reach events we've already covered on a prior poll.
+            if high_water is not None and ev_lt is not None and ev_lt <= high_water:
+                reached_known = True
+                break
+            activated += await _process_one_event(ev)
+
+        if reached_known:
+            break
+
+        last_lt = _event_lt(events[-1])
+        # Can't advance the cursor safely, or we've hit the end of history.
+        if last_lt is None or (before_lt is not None and last_lt >= before_lt):
+            break
+        before_lt = last_lt
+        if len(events) < page_limit:
+            break
+
+    if newest_lt is not None:
+        _set_high_water_lt(newest_lt)
 
     return activated
 

@@ -7,10 +7,14 @@ logger = logging.getLogger(__name__)
 
 from services.engine_client import engine_client
 from core.config import load_config
+from core.pricing import PLANS, PLAN_ORDER  # canonical single source of truth for prices
 
 config = load_config()
 
 router = Router()
+
+# Display emoji per tier (presentation only — never a source of price data).
+_PLAN_EMOJI = {"starter": "🥉", "pro": "🥈", "pro_plus": "🥇", "elite": "💎"}
 
 # Plan configuration (Display only)
 TIER_PRICES = {
@@ -87,34 +91,41 @@ async def connect_wallet(message: types.Message):
 
 @router.message(Command("upgrade"))
 async def start_upgrade(message: types.Message, **kwargs):
-    """Start subscription upgrade process — sends a single message with all plans"""
-    # Prices aligned with pay.py PLANS dict (Starter 75⭐, Pro 375⭐, Pro+ 750⭐, Elite 1500⭐)
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [
-            types.InlineKeyboardButton(text="🥉 Starter - 75⭐", callback_data="pay_stars_starter"),
-            types.InlineKeyboardButton(text="🥈 Pro - 375⭐", callback_data="pay_stars_pro"),
-        ],
-        [
-            types.InlineKeyboardButton(text="🥇 Pro+ - 750⭐", callback_data="pay_stars_pro_plus"),
-            types.InlineKeyboardButton(text="💎 Elite - 1500⭐", callback_data="pay_stars_elite"),
-        ],
-        [
-            types.InlineKeyboardButton(text="🪙 TON Payment", callback_data="pay_ton"),
-            types.InlineKeyboardButton(text="ℹ️ Plan Details", callback_data="plan_details"),
-        ]
-    ])
+    """Start subscription upgrade — a single message listing all plans.
 
-    await message.reply(
-        "🚀 <b>Upgrade Your Plan</b>\n\n"
-        "Choose a plan to upgrade instantly using Telegram Stars or TON:\n\n"
-        "🥉 <b>Starter</b> (75⭐ / 1 TON): 100 queries/day\n"
-        "🥈 <b>Pro</b> (375⭐ / 5 TON): 500 queries/day + Alerts\n"
-        "🥇 <b>Pro+</b> (750⭐ / 10 TON): 1000 queries/day + Analytics\n"
-        "💎 <b>Elite</b> (1500⭐ / 20 TON): Unlimited + VIP support\n\n"
-        "👇 <b>Select an option:</b>",
-        parse_mode="HTML",
-        reply_markup=keyboard
-    )
+    Every price is rendered from core/pricing.py (the single source of truth) so
+    the displayed amount ALWAYS equals what pay.py charges. Never hardcode prices
+    here. The pay_stars_/pay_ton buttons are handled by handlers/pay.py.
+    """
+    # Plan buttons (2 per row), Star prices straight from PLANS.
+    plan_btns = [
+        types.InlineKeyboardButton(
+            text=f"{_PLAN_EMOJI.get(k, '📦')} {PLANS[k]['name'].replace(' Plan', '')} - {PLANS[k]['price_stars']}⭐",
+            callback_data=f"pay_stars_{k}",
+        )
+        for k in PLAN_ORDER
+    ]
+    rows = [plan_btns[i:i + 2] for i in range(0, len(plan_btns), 2)]
+    rows.append([
+        types.InlineKeyboardButton(text="🪙 TON Payment", callback_data="pay_ton"),
+        types.InlineKeyboardButton(text="ℹ️ Plan Details", callback_data="plan_details"),
+    ])
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=rows)
+
+    lines = [
+        "🚀 <b>Upgrade Your Plan</b>\n",
+        "Choose a plan to upgrade instantly using Telegram Stars or TON:\n",
+    ]
+    for k in PLAN_ORDER:
+        p = PLANS[k]
+        qpd = "Unlimited queries/day" if p["queries_per_day"] == -1 else f"{p['queries_per_day']} queries/day"
+        name = p["name"].replace(" Plan", "")
+        lines.append(
+            f"{_PLAN_EMOJI.get(k, '📦')} <b>{name}</b> ({p['price_stars']}⭐ / {p['price_ton']} TON): {qpd}"
+        )
+    lines.append("\n👇 <b>Select an option:</b>")
+
+    await message.reply("\n".join(lines), parse_mode="HTML", reply_markup=keyboard)
 
 def register_subscription_handlers(dp, config=None, redis_client=None):
     """Register subscription handlers"""
