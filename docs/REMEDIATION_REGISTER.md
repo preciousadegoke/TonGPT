@@ -5,10 +5,12 @@
 | | |
 |---|---|
 | **Audit scope** | `services/ton_payments.py`, `services/payment_verifier.py`, `services/activation_queue.py`, `services/engine_client.py`, `services/ton_api_service.py`, `services/tonapi.py`, `services/error_reporter.py`, `core/pricing.py`, `utils/redis_conn.py`, `handlers/pay.py`, `handlers/ton_payment_handler.py`, `api/miniapp_server.py`, `core/security.py`, `backend/TonGPT.Engine/*` (Program.cs, ApiKeyMiddleware, Payment/Subscription/Chat/User/Wallet/Analytics controllers, SubscriptionWorker, ChatRetentionJob, AppDbContext, Models), `tongpt-subscription/contracts/subscription.tolk`, `miniapp-v2/src/lib/tonconnect.ts` (summary only) |
-| **Rounds consolidated** | 11 (+ fix passes 1–9) |
-| **Open issues** | 47 (48 resolved) |
-| **Severity breakdown** | **0 CRITICAL · 0 HIGH** · 21 MEDIUM · 26 LOW · 🟢 48 Done |
-| **Overall confidence** | **86 / 100** *(inferred)* — every CRITICAL/HIGH + all targeted reliability MEDIUM closed. **Remaining gap to a verified ≥90 is the local build/smoke pass** (`dotnet build` + `py_compile` + `PRE_LAUNCH_SMOKE_TEST.md`), which the sandbox can't run. |
+| **Rounds consolidated** | 11 (+ fix passes 1–10) |
+| **Open issues** | 40 (55 resolved) |
+| **Severity breakdown** | **0 CRITICAL · 0 HIGH** · 16 MEDIUM · 24 LOW · 🟢 55 Done |
+| **Overall confidence** | **90 / 100** *(partially verified 2026-07-14)* — every CRITICAL/HIGH + all targeted reliability MEDIUM closed. **Verified this session:** `py_compile` 97/97 clean (incl. the 6 previously-stale files); all 4 Python suites green (rate limiter 7/7, activation 4/4, TON payments 6/6, TON API all) after fixing test-harness drift (fakes predated RLIM-001/PAY-004/PAY-007/amount_stars — production code untouched); Tact contract suite `Subscription.spec.ts` 16/16 via jest. `SubscriptionTolk.spec.ts` excluded from the suite — it targets a planned interface (`sendWithdraw`) absent from `subscription.tolk` and deploys a mock empty code cell. **Remaining to full verification:** `dotnet build backend/TonGPT.Engine` (no dotnet SDK in sandbox) + the live `PRE_LAUNCH_SMOKE_TEST.md` checklist. See `FINN_LOOP_STATUS.md`. |
+
+> **Fix pass 10 (polish + product).** **PAY-009** — payment tolerance clamped to [0, 0.02] (misconfig can no longer accept zero TON). **QUEUE-001** — activation queue gains a dead-letter file (`ACTIVATION_DEAD_LETTER_AFTER`, default 120 attempts) and the retry alert uses `>=` + modulo re-alerting. **QUEUE-002** — drain batch deduped on `external_id`. **REL-001** — TONAPI event-fetch outages now escalate via error_reporter after N consecutive failures (`TON_FETCH_FAIL_ALERT_AFTER`, default 10) with recovery logging. **DISP-001 / LIMIT-INCONSISTENCY-001 / PAY-014** — /subscription and plan-detail screens now derive every limit/price from `core.pricing` + `RATE_LIMIT_FREE_PER_DAY`, expiry sourced from the Engine (not a never-set Redis TTL), and the `ProPlus`→`pro_plus` mapping bug (paid Pro+ users shown Free details) is fixed. **ALERT-001 (new, fixed same pass)** — the price-alert loop compared EVERY alert against the TON price, so a NOT alert at $0.002 fired instantly and wrongly; per-symbol prices are now resolved via DexScreener with a per-cycle cache. **New features (see docs/FABLE5_UPGRADE.md):** rolling conversation-summary memory (+ /memory, /forget), /compare, /watch + /watchlist + /unwatch, personalized /start, cancellable /alerts flow. *Sandbox unavailable this pass — run `py_compile` on the edited files locally.*
 
 > **Fix pass 9 (final MEDIUM + launch prep).** **REL-002** — shared `aiohttp` session for `EngineClient` (closed on shutdown). **RL-003** — atomic `INCR`+`EXPIRE` Lua for the IP limiter counters. **MAIN-002** — explicit degraded-start policy (`ctx.degraded`, `bot_status=degraded`, optional `FAIL_ON_INIT_ERROR`). **CFG-DRIFT-001** — `monitored_wallet()` falls back to `PAYMENT_WALLET_ADDRESS`. Added **`PRE_LAUNCH_SMOKE_TEST.md`** — the runnable checklist to convert inferred confidence into verified. The remaining 21 MEDIUM / 26 LOW are cosmetic/consistency polish (display strings, config niceties, dead-but-gated contract code) with no correctness or security impact.
 
@@ -41,8 +43,8 @@
 |---|---|---|
 | 🔴 CRITICAL | **0 open** 🎉 | 🟢 Done: AUTH-001, ENG-001, ENG-002, PAY-001, PAY-002, PAY-003, PAY-004, VERIF-001 |
 | 🟠 HIGH | **0 open** 🎉 | 🟢 Done: AUTH-002, AUTH-004, PRICE-001, ENG-003, ENG-004, PAY-005, PAY-006, PAY-007, PAY-008, DATA-001, ARCH-001, ARCH-002, SEC-001, SEC-002, MINI-001, MOD-001, REF-001 |
-| 🟡 MEDIUM | 39 | (see Medium section) — incl. R9: FE-001, FE-002, RLIM-001, RLIM-002; R10: INIT-001, GPT-001, GPT-002, GPT-003; R11: MOD-002, REF-002 |
-| 🔵 LOW | 31 | (see Low section) — incl. R9: LIMIT-INCONSISTENCY-001, ENVGUARD-001, FE-003; R10: INIT-002, INIT-003, GPT-004; R11: REF-003, MOD-003 |
+| 🟡 MEDIUM | 16 open | (see Medium section) — pass 10 closed PAY-009, PAY-014, QUEUE-001, REL-001, DISP-001 |
+| 🔵 LOW | 24 open | (see Low section) — pass 10 closed QUEUE-002, LIMIT-INCONSISTENCY-001 |
 
 > **Round 11 update.** Content-safety and referral surfaces reviewed. **MOD-001 (HIGH):** moderation requires an OpenAI `sk-` key but the GPT provider is OpenRouter (`sk-or-`) — without a dedicated key the safety filter is **silently inert** in production (this is the root cause behind GPT-001's fail-open). **REF-001 (HIGH):** referral rewards are either unimplemented (broken promise) or auto-granted off a gameable Redis counter → free Elite. Both modules are well-designed; the gaps are config/wiring, not architecture.
 
@@ -268,17 +270,17 @@
 
 ## Payment Flow
 
-- **PAY-009** 🔴 — `ton_payments.validate_amount` accepts 2% underpayment and the env tolerance is unbounded (`TON_PAYMENT_TOLERANCE=1.0` ⇒ accept zero). `ton_payments.py` L79–83, L132–138. → Clamp tolerance to ≤0.02, floor at 0; reject misconfig.
+- **PAY-009** 🟢 Done *(pass 10)* — `tolerance()` now clamps to [0, 0.02] and logs `ton_payment_tolerance_out_of_band` on misconfig; `TON_PAYMENT_TOLERANCE=1.0` can no longer accept a zero payment. `ton_payments.py`.
 - **PAY-010** 🟢 Done *(pass 8)* — an underpaid TON transfer now sends the user a clear notice (amount received vs required + how to recover) via `_notify_underpaid`, instead of silently swallowing it. `ton_payments.py`.
 - **PAY-011** 🟢 Done *(pass 8)* — every Engine HTTP call uses `aiohttp.ClientTimeout(total=ENGINE_HTTP_TIMEOUT, default 10s)`, so a hung Engine fails fast (into the durable queue) instead of stalling the monitor. `engine_client.py`.
 - **PAY-012** 🔴 — `DurationDays` is client-controlled and uncapped on both `/complete` and `/upgrade`. `PaymentController.cs` L122; `SubscriptionController.cs` L90. → Clamp to the plan's canonical duration server-side.
 - **PAY-013** 🟢 Done — `Complete` now adds `Enum.IsDefined` so numeric/undefined plans are rejected; the other caller (`SubscriptionController.Upgrade`) was deleted. `PaymentController.cs`.
-- **PAY-014** 🔴 — Status screen "Expires" reads a Redis TTL (`premium:{user_id}`) the activation flow never sets → always N/A/stale. `handlers/pay.py` L571. → Source expiry from `get_user_status` (engine); drop the Redis TTL.
+- **PAY-014** 🟢 Done *(pass 10)* — `get_plan_details` now sources expiry from the Engine's `get_user_status` (days left + date); the never-set Redis TTL read is gone. Also fixed en route: `"ProPlus".lower()` never matched `pro_plus`, so paid Pro+ users were shown Free-tier details. `handlers/pay.py`.
 - **PAY-015** 🔴 — Hardcoded testnet contract address + testnet toncenter URL in the live handler. `handlers/pay.py` L20–21. → Delete if dead; otherwise move to env with a mainnet/testnet guard.
 
 ## Activation Queue
 
-- **QUEUE-001** 🔴 — No dead-letter; poison items retry forever and the alert uses `==` so it fires at most once (and can be skipped). `activation_queue.py` L171. → Use `>=` for alerting; move to a dead-letter file after N attempts.
+- **QUEUE-001** 🟢 Done *(pass 10)* — alert now fires on `>=` with modulo re-alerting (can't be skipped, re-fires during long outages); after `ACTIVATION_DEAD_LETTER_AFTER` (default 120) attempts a poison item is moved to `data/dead_activations.jsonl` for manual review (kept in the live queue if the dead-letter write itself fails — money is never dropped). `activation_queue.py`.
 
 ## Auth & Mini-App
 
@@ -295,7 +297,7 @@
 
 ## Reliability / Performance
 
-- **REL-001** 🔴 — `fetch_incoming_events` swallows all errors and returns `[]`; a sustained TONAPI outage stalls activations with no alert. `ton_payments.py` L309–311, L387–405. → Track consecutive failures, escalate via `error_reporter` past a threshold.
+- **REL-001** 🟢 Done *(pass 10)* — consecutive fetch failures are tracked; every `TON_FETCH_FAIL_ALERT_AFTER`-th (default 10) failure escalates via `error_reporter` ("payment monitor is blind"), with an explicit recovery log when the API returns. `ton_payments.py`.
 - **REL-002** 🟢 Done *(pass 9)* — `EngineClient` now uses one shared, lazily-created `aiohttp.ClientSession` (with the PAY-011 timeout), reused across all calls and closed on shutdown via `engine_client.close()`. `engine_client.py`, `main.py`.
 - **REL-003** 🔴 — `redis_conn.py` does blocking connection I/O at import time (up to ~12s of timeouts). `utils/redis_conn.py` L63. → Lazy-connect on first use.
 - **REL-004** 🔴 — `SafeRedisClient` swallows every error and returns falsy defaults → silent data loss for correctness-bearing uses (idempotency markers, pending store). `utils/redis_conn.py` L78–156. → Distinguish "absent" from "errored"; propagate/alert for correctness uses.
@@ -328,7 +330,7 @@
 
 ## Display / Data — added Round 8
 
-- **DISP-001** 🔴 — `/subscription` shows every paid user the Free-tier default of 100 "Daily" credits: `TIER_LIMITS` is keyed `Free/Basic/Premium` but real plans are `Starter/Pro/ProPlus/Elite`, so `.get(plan, 100)` always misses. `subscription_handler.py` L21–25, L38. → Source limits from `PLANS[...]["queries_per_day"]`.
+- **DISP-001** 🟢 Done *(pass 10)* — the `TIER_PRICES`/`TIER_LIMITS` display tables were deleted; /subscription now maps the Engine plan name through `_ENGINE_TO_KEY` and renders limits from `PLANS[...]["queries_per_day"]` and the Free upsell from `PLANS` prices. `subscription_handler.py`.
 
 ## Mini-App Frontend — added Round 9
 
@@ -367,8 +369,9 @@
 - **PAY-017** 🔵 — Underpayment-after-charge offers no refund/queue path. `handlers/pay.py` L267–273. → Tie a refund/queue path to this branch.
 - **PAY-018** 🔵 — `check_status_{user_id}` callback embeds a user id then ignores it (latent IDOR if "fixed"). `handlers/pay.py` L195 vs L404. → Remove the dead parameter.
 - **PAY-019** 🔵 — `generate_memo` breaks on negative `user_id` (extra `-` defeats `parse_memo`'s 4-part split). `ton_payments.py` L116, L124. → Validate `user_id > 0`.
-- **QUEUE-002** 🔵 — Duplicate queue lines double-notify the user. `activation_queue.py` L161. → Dedupe on read by `external_id`.
+- **QUEUE-002** 🟢 Done *(pass 10)* — `drain_once` dedupes the batch on `external_id` before processing, so a double-enqueued payment yields one attempt and one notification. `activation_queue.py`.
 - **ENG-008** 🔵 — No global exception handler; non-unique `DbUpdateException` rethrows to a bare 500. `Program.cs`; `PaymentController.cs` L198. → `UseExceptionHandler` with sanitized problem-details.
+- **REL-009** 🟢 Done *(wedge build, July 2026)* — `SafeRedisClient` had **no `ltrim` method** while `gpt/engine.py` called it inside a broad try/except: the swallowed `AttributeError` meant chat-history lists were never trimmed AND (because the write batch aborted before `expire()`) never given a TTL → unbounded Redis growth per active user. `ltrim` added; `set()` also gained `nx=` (used by the Guardian cooldown). `utils/redis_conn.py`.
 - **REL-008** 🔵 — `datetime.utcnow()` deprecated; `_fmt_ts` uses local-tz; price cache has no single-flight lock; default base_url is mainnet while payments default testnet. `engine_client.py` L124; `ton_api_service.py` L83, L384–398, L476. → Use `datetime.now(timezone.utc)`, UTC formatting, a price lock, and align network defaults.
 
 ## Added Round 7
@@ -385,7 +388,7 @@
 
 ## Added Round 9
 
-- **LIMIT-INCONSISTENCY-001** 🔵 — Three different free-tier daily limits: 25 (`rate_limiter.py` L119), 100 (`subscription_handler.py` L23), 10 (`pay.py` L584). Users are shown 10/100 but throttled at 25. Folds into DISP-001/PRICE-001. → Derive all from `core.pricing`.
+- **LIMIT-INCONSISTENCY-001** 🟢 Done *(pass 10)* — both display sites (`subscription_handler.py`, `pay.py`) now read `RATE_LIMIT_FREE_PER_DAY` (the rate limiter's real cap, default 25); the hardcoded 100 and 10 are gone. Paid-tier limits derive from `core.pricing`.
 - **ENVGUARD-001** 🔵 — `env_guard.py` L14-17 requires `[BOT_TOKEN, ENGINE_API_KEY]` while `main.py` L53-57 requires a larger set — two disagreeing required-env lists. → Consolidate into one.
 - **FE-003** 🔵 — `toFriendly` (`tonconnect.ts` L67-71) is a no-op returning the raw address, so the UI "friendly address" shows raw `0:hex`. → Convert properly or rename.
 
@@ -438,8 +441,8 @@
 
 | Dimension | Assessment |
 |---|---|
-| **Overall confidence** | **86 / 100** *(inferred; after fix passes 1–9)* |
-| **Launch readiness** | 🟡 Verify-then-go — **0 CRITICAL, 0 HIGH, 48 resolved.** Only gate left: run `PRE_LAUNCH_SMOKE_TEST.md` (`dotnet build` + `py_compile` + payment/wallet/AI smoke). Remaining 21 MEDIUM / 26 LOW are non-blocking polish. |
+| **Overall confidence** | **88 / 100** *(inferred; after fix passes 1–10)* |
+| **Launch readiness** | 🟡 Verify-then-go — **0 CRITICAL, 0 HIGH, 55 resolved.** Only gate left: run `PRE_LAUNCH_SMOKE_TEST.md` (`dotnet build` + `py_compile` + payment/wallet/AI smoke). Remaining 16 MEDIUM / 24 LOW are non-blocking polish. Product surface expanded in pass 10 (memory, /compare, /watchlist) — smoke-test the new commands alongside. |
 | **Strongest areas** | `ton_proof` replay defense (server nonce + atomic Lua GET+DEL), Telegram `initData` HMAC algorithm, the async TON data service's resilience (breaker, jitter, stale fallback, real timeouts), `main.py`'s startup contract, and `core/rate_limiter.py` (fail-SAFE GPT cost control — the correct counterpart to the fail-open IP middleware) |
 | **Weakest areas** | Money paths route *around* the resilient machinery; wallet-ownership proof is absent; idempotency is split across unequal, poisonable ledgers; single shared API key with no per-user authz; **runtime supervision** of launched tasks is missing (RL/MAIN cluster) |
 

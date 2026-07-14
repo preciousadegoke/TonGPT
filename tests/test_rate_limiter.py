@@ -15,6 +15,7 @@ Covers:
 """
 
 import asyncio
+import math
 import os
 import sys
 import time
@@ -62,6 +63,45 @@ class FakeRedis:
 
     def exists(self, key):
         return 1 if key in self.z else 0
+
+    # eval ------------------------------------------------------------------
+    # Emulates core.rate_limiter._ATOMIC_LUA (RLIM-001) so the suite tests the
+    # REAL atomic path, not the degraded in-memory fallback. Semantics mirror
+    # the Lua script exactly: check every window first; consume in all windows
+    # only if every window passes.
+    def eval(self, script, numkeys, *args):
+        keys = list(args[:numkeys])
+        argv = list(args[numkeys:])
+        now = float(argv[0])
+        member = argv[1]
+        n = (len(argv) - 2) // 2
+        windows = []
+        for i in range(1, n + 1):
+            # Lua ARGV[1+i*2]/ARGV[2+i*2] (1-based) -> python argv[i*2]/argv[i*2+1] (0-based)
+            seconds = float(argv[i * 2])
+            limit = int(float(argv[i * 2 + 1]))
+            windows.append((keys[i - 1], seconds, limit))
+        tightest_remaining = -1
+        tightest_limit = 0
+        for idx, (key, seconds, limit) in enumerate(windows, start=1):
+            if limit >= 0:
+                self.zremrangebyscore(key, 0, now - seconds)
+                count = self.zcard(key)
+                if count >= limit:
+                    oldest = self.zrange(key, 0, 0, withscores=True)
+                    retry = seconds
+                    if oldest:
+                        retry = max(1, math.ceil(seconds - (now - oldest[0][1])))
+                    return [0, int(retry), idx, 0, 0]
+                remaining = limit - count - 1
+                if tightest_remaining < 0 or remaining < tightest_remaining:
+                    tightest_remaining = remaining
+                    tightest_limit = limit
+        for key, seconds, limit in windows:
+            if limit >= 0:
+                self.zadd(key, {member: now})
+                self.expire(key, seconds + 5)
+        return [1, 0, 0, max(0, tightest_remaining), tightest_limit]
 
     # pipeline ------------------------------------------------------------
     def pipeline(self, transaction=True):

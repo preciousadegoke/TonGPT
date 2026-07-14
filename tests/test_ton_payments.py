@@ -38,7 +38,8 @@ class FakeEngine:
         self.calls = 0
 
     async def complete_payment(self, telegram_id, plan, provider, external_id,
-                               duration_days=30, amount_ton=0.0):
+                               duration_days=30, amount_ton=0.0, amount_stars=0,
+                               max_attempts=3):
         self.calls += 1
         if not self.up:
             return {"ok": False, "permanent": False, "error": "unreachable"}
@@ -138,7 +139,7 @@ async def test_monitor_activates_once_idempotent():
     engine = _install_fakes()
     tp = _load_tp()
 
-    async def fake_fetch(limit=50):
+    async def fake_fetch(limit=50, before_lt=None):
         return [
             {"event_id": "evX", "actions": [
                 {"type": "TonTransfer", "status": "ok",
@@ -150,7 +151,8 @@ async def test_monitor_activates_once_idempotent():
     second = await tp.process_events_once()   # replay must not double-activate
     assert first == 1, first
     assert second == 0, second
-    assert engine.activated == {"ton:evX": "ProPlus"}
+    # PAY-004: per-transfer idempotency key is event_id + action index.
+    assert engine.activated == {"ton:evX:0": "ProPlus"}
     print("✓ monitor activates once and is idempotent on replay")
 
 
@@ -158,7 +160,7 @@ async def test_underpayment_never_activates():
     engine = _install_fakes()
     tp = _load_tp()
 
-    async def fake_fetch(limit=50):
+    async def fake_fetch(limit=50, before_lt=None):
         return [
             {"event_id": "evLow", "actions": [
                 {"type": "TonTransfer", "status": "ok",

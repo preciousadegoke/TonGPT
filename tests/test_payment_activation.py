@@ -34,7 +34,8 @@ class FakeEngine:
         self.calls = 0
 
     async def complete_payment(self, telegram_id, plan, provider, external_id,
-                               duration_days=30, amount_ton=0.0):
+                               duration_days=30, amount_ton=0.0, amount_stars=0,
+                               max_attempts=3):
         self.calls += 1
         if not self.up:
             return {"ok": False, "permanent": False, "error": "unreachable"}
