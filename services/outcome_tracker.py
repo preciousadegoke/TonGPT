@@ -333,11 +333,14 @@ async def evaluate_once() -> Dict[str, int]:
 
         due: List[Tuple[str, str, Optional[str], Optional[float], Optional[float], str, int]] = []
 
+        ages: Dict[str, float] = {}
+
         def _collect():
             for vid, addr, symbol, liq0, px0, risk, micro, checked_at in conn.execute(
                 "SELECT verdict_id, address, symbol, liq0, px0, risk_level, microcap, checked_at "
                 "FROM verdicts WHERE final_label IS NULL"
             ).fetchall():
+                ages[vid] = round((now - checked_at) / 86400, 2)
                 done = {h for (h,) in conn.execute(
                     "SELECT horizon FROM outcomes WHERE verdict_id=?", (vid,)
                 ).fetchall()}
@@ -381,6 +384,7 @@ async def evaluate_once() -> Dict[str, int]:
                 if vid in finalized:
                     continue
                 label, signals = _classify_snapshot(liq0, px0, markets.get(query))
+                signals["age_days"] = ages.get(vid)
                 conn.execute(
                     "INSERT OR IGNORE INTO outcomes "
                     "(verdict_id, horizon, checked_at, label, signals) VALUES (?,?,?,?,?)",
@@ -527,7 +531,7 @@ async def lookup_receipt(query: str) -> Optional[Dict[str, Any]]:
                     continue
                 vid = str(rec.get("verdict_id", "")).lower()
                 h = str(rec.get("verdict_hash") or rec.get("outcome_hash") or "").lower()
-                if vid == q or (h and h.startswith(q)):
+                if vid.startswith(q) or (h and h.startswith(q)):
                     hit = {"kind": kind, "record": rec}
                     break
         if hit is None:

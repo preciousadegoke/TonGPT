@@ -131,11 +131,25 @@ async def test_proof_lookup_paths():
         hit3 = await ot.lookup_receipt(orecs[0]["outcome_hash"][:16])
         assert hit3 and hit3["kind"] == "outcome"
 
+        # F1: receipt-id PREFIX (>=8 chars) also resolves
+        hit4 = await ot.lookup_receipt("aaaa1111")
+        assert hit4 and hit4["record"]["verdict_id"] == "aaaa11112222"
+
         # not found + too-short + non-hex are safe
         assert await ot.lookup_receipt("ffffffffffff") is None
         assert await ot.lookup_receipt("abc") is None
         assert await ot.lookup_receipt("../etc/passwd") is None
-    print("✓ /proof lookup: id, hash prefix, outcome hash, not-found, hostile input")
+
+        # F2: every real (non-skipped) outcome snapshot records the verdict age
+        import sqlite3
+        conn = sqlite3.connect(ot.DB_FILE)
+        try:
+            for (sig,) in conn.execute(
+                    "SELECT signals FROM outcomes WHERE label != 'skipped'").fetchall():
+                assert json.loads(sig).get("age_days") is not None
+        finally:
+            conn.close()
+    print("✓ /proof lookup: id, id-prefix, hash prefix, outcome hash, hostile input, age_days")
 
 
 async def test_proof_render_honesty():

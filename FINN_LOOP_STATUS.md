@@ -69,8 +69,10 @@ a local build/smoke pass the previous environment couldn't run. This session ran
   decisions: Tolk registry + Merkle proofs · /trackrecord surface · full
   calibration incl. misses · phased. **Phases 1–2 shipped** — outcome tracker +
   verdict_hash + supervised loop (9/9 tests); /trackrecord + /proof graded
-  card with HTML-escape hardening (7/7 tests). Next: /review, then Phase 3
-  (Tolk anchor registry + Merkle proofs).
+  card with HTML-escape hardening (7/7 tests). **/review passed** —
+  docs/SPEC001_REVIEW.md: 2 findings fixed (id-prefix lookup, age_days),
+  4 risks documented, 52 checks green. Staged for merge — awaiting 🚀.
+  Next: Phase 3 (Tolk anchor registry + Merkle proofs).
 
 ## History
 
