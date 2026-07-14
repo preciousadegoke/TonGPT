@@ -62,6 +62,13 @@ a local build/smoke pass the previous environment couldn't run. This session ran
   copy `tests/` + `wrappers/` + configs next to a symlinked `node_modules` and run
   `node node_modules/jest/bin/jest.js tests/Subscription.spec.ts --runInBand`.
 
+## Active spec
+
+- **SPEC-001 — Receipts Engine** (`specs/SPEC-001-receipts-track-record.md`):
+  outcome tracker → /trackrecord + /proof → Tolk anchor registry. Approved
+  decisions: Tolk registry + Merkle proofs · /trackrecord surface · full
+  calibration incl. misses · phased. Next: /build Phase 1 (outcome tracker).
+
 ## History
 
 - **2026-07-14** — Finn Loop v2 session 1: verification pass run; 4 test-harness
