@@ -673,6 +673,7 @@ async def register_all_handlers(ctx: AppContext):
        "watchlist",
        # Trust layer (docs/CATEGORY_PLAY.md). MUST come before gpt_reply so
        # address-bearing messages get a verdict card, not a GPT answer.
+       "trackrecord",
        "verify",
        # ↓ MUST BE LAST — contains catch-all handler for unrecognized commands
        "gpt_reply",

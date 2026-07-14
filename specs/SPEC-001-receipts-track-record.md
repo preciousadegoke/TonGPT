@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | 🟢 Phase 1 SHIPPED (2026-07-14) · Phases 2–4 pending |
+| **Status** | 🟢 Phases 1–2 SHIPPED (2026-07-14) · Phases 3–4 pending |
 | **Author** | Finn Loop (idea + research), approved by Legend |
 | **Date** | 2026-07-14 |
 | **Origin** | `docs/CATEGORY_PLAY.md` Move 2 — "the on-chain receipts ledger + public track-record page… it *is* the moat" |
@@ -180,6 +180,24 @@ tracker ships first even though the shiny parts are 2–3.
   (`OUTCOME_TRACKER_ENABLED=false` to disable).
 - Tests: `tests/test_outcome_tracker.py` — 9 tests / 7 archetypes green, incl.
   dip-recovery guard, idempotent re-run, downtime integrity, backpressure.
+
+## 5.2 Phase 2 implementation notes (shipped)
+
+- `handlers/trackrecord.py` — `/trackrecord` (+ `/receipts` alias) graded card:
+  recall, false-alarm rate, misses list (real receipt ids), calibration table,
+  exclusions — every rate with its denominator; graceful cold start (issued
+  counts + maturity note, no invented rates). `/proof <id|hash-prefix>` shows
+  the receipt, its canonical hash, graded outcome, and an explicitly *pending*
+  anchor status until Phase 3. Renderers are pure functions (testable sans
+  aiogram). All attacker-influenced strings (token symbols = deployer-controlled
+  DEX metadata, user queries) are HTML-escaped.
+- `services/outcome_tracker.py` — added `pending_counts()` and
+  `lookup_receipt()` (verdict_id exact / ≥8-hex-char hash prefix; hostile
+  non-hex input rejected before any file scan).
+- `handlers/verify.py` — old issued-counts-only `/receipts` handler removed;
+  `main.py` registers `trackrecord` before `verify`.
+- Tests: `tests/test_trackrecord.py` — 7 checks incl. denominator-sum property,
+  HTML-injection regression, hostile lookup inputs.
 
 ## 6. Acceptance criteria (per phase)
 

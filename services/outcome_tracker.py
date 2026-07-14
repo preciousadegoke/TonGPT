@@ -479,6 +479,73 @@ async def track_record_stats() -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# Phase-2 helpers: receipt lookup + maturity counts (consumed by /trackrecord)
+# --------------------------------------------------------------------------- #
+async def pending_counts() -> Dict[str, int]:
+    """How many verdicts exist vs. how many have a final grade."""
+    def _q():
+        conn = _db()
+        try:
+            total = conn.execute("SELECT COUNT(*) FROM verdicts").fetchone()[0]
+            done = conn.execute(
+                "SELECT COUNT(*) FROM verdicts WHERE final_label IS NOT NULL"
+            ).fetchone()[0]
+            return {"total": total, "finalized": done, "maturing": total - done}
+        finally:
+            conn.close()
+    return await asyncio.to_thread(_q)
+
+
+async def lookup_receipt(query: str) -> Optional[Dict[str, Any]]:
+    """Find a ledgered receipt by verdict_id, or by verdict/outcome hash prefix.
+
+    Returns {"kind": "verdict"|"outcome", "record": <ledger dict>,
+             "final_label": <str|None>} or None. Prefix lookups need >=8 chars
+    to avoid ambiguous matches; on ambiguity the first ledger hit wins (the
+    ledger is append-only, so this is stable).
+    """
+    q = (query or "").strip().lower()
+    if not q or len(q) < 8 or not all(c in "0123456789abcdef" for c in q):
+        return None
+
+    def _scan() -> Optional[Dict[str, Any]]:
+        if not os.path.exists(LEDGER_FILE):
+            return None
+        hit = None
+        with open(LEDGER_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                kind = "outcome" if rec.get("type") == "outcome" else (
+                    "anchor" if rec.get("type") == "anchor" else "verdict")
+                if kind == "anchor":
+                    continue
+                vid = str(rec.get("verdict_id", "")).lower()
+                h = str(rec.get("verdict_hash") or rec.get("outcome_hash") or "").lower()
+                if vid == q or (h and h.startswith(q)):
+                    hit = {"kind": kind, "record": rec}
+                    break
+        if hit is None:
+            return None
+        conn = _db()
+        try:
+            row = conn.execute(
+                "SELECT final_label FROM verdicts WHERE verdict_id=?",
+                (hit["record"].get("verdict_id"),),
+            ).fetchone()
+            hit["final_label"] = row[0] if row else None
+        finally:
+            conn.close()
+        return hit
+    return await asyncio.to_thread(_scan)
+
+
+# --------------------------------------------------------------------------- #
 # Supervised loop (wired in main.py under _spawn_supervised, MAIN-001 pattern)
 # --------------------------------------------------------------------------- #
 async def outcome_loop(interval: Optional[int] = None) -> None:
@@ -494,6 +561,7 @@ async def outcome_loop(interval: Optional[int] = None) -> None:
 
 __all__ = [
     "evaluate_once", "outcome_loop", "track_record_stats",
+    "pending_counts", "lookup_receipt",
     "canonical_hash", "set_market_fetcher", "set_clock",
     "HORIZONS", "LEDGER_FILE", "DB_FILE",
 ]
