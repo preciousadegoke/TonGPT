@@ -67,7 +67,9 @@ a local build/smoke pass the previous environment couldn't run. This session ran
 - **SPEC-001 — Receipts Engine** (`specs/SPEC-001-receipts-track-record.md`):
   outcome tracker → /trackrecord + /proof → Tolk anchor registry. Approved
   decisions: Tolk registry + Merkle proofs · /trackrecord surface · full
-  calibration incl. misses · phased. Next: /build Phase 1 (outcome tracker).
+  calibration incl. misses · phased. **Phase 1 shipped** — outcome tracker +
+  verdict_hash + supervised loop, 9/9 tests. Next: /review, then Phase 2
+  (/trackrecord + /proof).
 
 ## History
 

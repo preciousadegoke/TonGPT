@@ -31,7 +31,6 @@ class AppContext:
     bot: Optional[Any] = None
     dp: Optional[Any] = None
     gpt_handler: Optional[Any] = None
-    x_monitor: Optional[Any] = None
     degraded: bool = False  # MAIN-002: True when service init failed
 
 ctx = AppContext()
@@ -161,8 +160,6 @@ _REDACT_KEYS = {
     "BOT_TOKEN", "ENGINE_API_KEY", "REFERRAL_SECRET",
     "PAYMENT_WALLET_ADDRESS", "OPENROUTER_API_KEY",
     "TELEGRAM_BOT_TOKEN", "TELEGRAM_TOKEN",
-    "X_API_KEY", "X_API_SECRET", "X_BEARER_TOKEN",
-    "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET",
     "REDIS_URL",
 }
 
@@ -190,17 +187,24 @@ _bg_tasks: list = []
 
 
 async def _supervise(name: str, factory, *, restart: bool = True, base: float = 2.0, cap: float = 60.0):
-    """Run ``factory()`` (a no-arg callable returning a fresh coroutine); on crash
-    or unexpected return, log loudly, report it, and restart with capped
-    exponential backoff. Cancellation propagates cleanly for shutdown."""
+    """Run ``factory()`` (a no-arg callable returning a fresh coroutine); on CRASH,
+    log loudly, report it, and restart with capped exponential backoff.
+
+    LAUNCH-FIX 2: a CLEAN return is a graceful exit, not a crash. Long-lived
+    loops are ``while True`` — the only way they return without raising is an
+    intentional early-out (feature disabled by config, one-shot work done).
+    The old behavior restarted clean returns forever: with
+    TON_PAYMENTS_ENABLED=false the monitor logged "disabled", returned, and
+    was restarted on a 4→60s loop, pinning CPU to 100% at zero traffic.
+    Cancellation propagates cleanly for shutdown."""
     attempt = 0
     while True:
         start = time.time()
         try:
             await factory()
-            if not restart:
-                return
-            logger.warning(f"⚠️ Supervised task '{name}' exited unexpectedly; restarting.")
+            # Clean return — graceful exit (disabled feature / completed work).
+            logger.info(f"✅ Supervised task '{name}' exited cleanly; not restarting.")
+            return
         except asyncio.CancelledError:
             logger.info(f"Supervised task '{name}' cancelled.")
             raise
@@ -247,6 +251,27 @@ async def price_alert_polling_loop():
                 await asyncio.sleep(60)
                 continue
 
+            # Per-cycle price cache: every non-TON symbol is resolved through
+            # DexScreener AT MOST once per cycle. Previously EVERY alert (e.g.
+            # a NOT alert at $0.002) was compared against the TON price (~$2+),
+            # so non-TON alerts fired instantly and wrongly.
+            symbol_prices: dict = {"TON": current_price, "TONCOIN": current_price}
+
+            async def _price_for(symbol: str):
+                sym = symbol.upper()
+                if sym in symbol_prices:
+                    return symbol_prices[sym]
+                price = None
+                try:
+                    from services.dexscreener_service import get_token_info
+                    market = await get_token_info(sym)
+                    if market.ok:
+                        price = market.price_usd
+                except Exception as fetch_err:
+                    logger.warning(f"Price alert: fetch for {sym} failed — {fetch_err}")
+                symbol_prices[sym] = price  # cache None too (skip, retry next cycle)
+                return price
+
             # Iterate over alerts:* keys using incremental scan (not blocking KEYS)
             for key in redis_client.scan_iter(match="alerts:*"):
                 try:
@@ -264,13 +289,18 @@ async def price_alert_polling_loop():
                         except (ValueError, TypeError):
                             continue
 
+                        symbol = field.split(":")[0] if ":" in field else "TON"
+                        symbol_price = await _price_for(symbol)
+                        if symbol_price is None:
+                            continue  # data unavailable this cycle — retry later
+
                         # Trigger if price crosses the target (above or below)
-                        if current_price >= target_price:
+                        if symbol_price >= target_price:
                             await notification_service.send_price_alert(
                                 user_id=user_id,
                                 price_data={
-                                    "symbol": field.split(":")[0] if ":" in field else "TON",
-                                    "current_price": current_price,
+                                    "symbol": symbol,
+                                    "current_price": symbol_price,
                                     "target_price": target_price,
                                     "price_change_24h": 0,
                                     "price_change_percentage_24h": 0,
@@ -399,7 +429,6 @@ async def on_startup():
     
     # FIX-3: Update global state to use ctx properties
     ctx.gpt_handler = services.get('gpt_handler')
-    ctx.x_monitor = services.get('X_monitor')
     
     # Rate limiter is created in main() before handler registration. This is an
     # idempotent safety-net in case startup ordering ever changes — it returns
@@ -442,15 +471,46 @@ async def on_startup():
     except Exception as e:
         logger.warning(f"⚠️ Activation reconciler not started: {type(e).__name__}: {e}")
 
-    # TON on-chain payment monitor. Self-disables when TON_PAYMENTS_ENABLED is
-    # false or MONITORED_WALLET_ADDRESS is unset, so it's safe to always create.
+    # TON on-chain payment monitor. LAUNCH-FIX 2: gate at spawn time — a
+    # disabled feature gets NO supervised task at all (the graceful-exit fix
+    # in _supervise is the second line of defense).
     try:
+        from services.ton_payments import is_configured as ton_configured
         from services.ton_payments import monitor_loop as ton_monitor_loop
-        _spawn_supervised("ton_payment_monitor", ton_monitor_loop)
-        logger.info("🪙 TON payment monitor task created")
+        if ton_configured():
+            _spawn_supervised("ton_payment_monitor", ton_monitor_loop)
+            logger.info("🪙 TON payment monitor task created")
+        else:
+            logger.info("🪙 TON payment monitor not started (TON_PAYMENTS_ENABLED=false or no wallet configured)")
     except Exception as e:
         logger.warning(f"⚠️ TON payment monitor not started: {type(e).__name__}: {e}")
-    
+
+    # TonGPT Radar channel poster — discovers new TON pairs and posts verdict
+    # cards to RADAR_CHANNEL_ID. Self-disables when the env var is unset.
+    try:
+        from services.radar import radar_enabled, radar_loop
+        if radar_enabled():
+            _spawn_supervised("radar_channel_poster", radar_loop)
+            logger.info("📡 Radar channel poster started")
+        else:
+            logger.info("📡 Radar disabled (RADAR_CHANNEL_ID not set)")
+    except Exception as e:
+        logger.warning(f"⚠️ Radar poster not started: {type(e).__name__}: {e}")
+
+    # Outcome tracker (SPEC-001 P1) — grades every ledgered verdict on the
+    # 24h/72h/7d/30d schedule so /trackrecord is computed from data. Reads the
+    # verdicts JSONL, writes data/receipts.db + outcome records. Off-switch:
+    # OUTCOME_TRACKER_ENABLED=false.
+    try:
+        if os.getenv("OUTCOME_TRACKER_ENABLED", "true").lower() != "false":
+            from services.outcome_tracker import outcome_loop
+            _spawn_supervised("outcome_tracker", outcome_loop)
+            logger.info("🧾 Outcome tracker started (grading verdict receipts)")
+        else:
+            logger.info("🧾 Outcome tracker disabled (OUTCOME_TRACKER_ENABLED=false)")
+    except Exception as e:
+        logger.warning(f"⚠️ Outcome tracker not started: {type(e).__name__}: {e}")
+
     # Set bot status in Redis (with fallback if Redis unavailable)
     # FIX-8: Replace naked Redis calls with safe_redis
     safe_redis("set", "bot_startup_time", int(time.time()))
@@ -560,7 +620,21 @@ async def initialize_bot():
     
     # Initialize dispatcher
     ctx.dp = Dispatcher(storage=MemoryStorage())
-    
+
+    # §2.2 — Wire the production RateLimitMiddleware as an OUTER middleware on
+    # message events so every incoming message is tier-rate-limited before it
+    # reaches any handler (including the gpt_reply catch-all). Registered as
+    # outer so it runs prior to filter/handler matching. Best-effort: a failure
+    # here must never prevent the bot from starting.
+    try:
+        from core.rate_limiter import init_rate_limiter
+        from utils.production_middleware import RateLimitMiddleware
+        limiter = init_rate_limiter(redis_client)  # idempotent: returns singleton
+        ctx.dp.message.outer_middleware(RateLimitMiddleware(limiter))
+        logger.info("✅ RateLimitMiddleware wired as outer middleware on messages")
+    except Exception as e:
+        logger.error(f"❌ Failed to wire RateLimitMiddleware: {type(e).__name__}: {e}")
+
     # Register event handlers after dispatcher is created
     ctx.dp.startup.register(on_startup)
     ctx.dp.shutdown.register(on_shutdown)
@@ -587,16 +661,19 @@ async def register_all_handlers(ctx: AppContext):
     HANDLER_MODULES = [
        "subscription_handler",
        "pay",
-       "X_handler",
        "whale",
        "alerts",
        "wallet_watch",
        "ston",
        "early_detection",
-       "influencer_handler",
        "referral",
        "follow",
        "ton_payment_handler",
+       "compare",
+       "watchlist",
+       # Trust layer (docs/CATEGORY_PLAY.md). MUST come before gpt_reply so
+       # address-bearing messages get a verdict card, not a GPT answer.
+       "verify",
        # ↓ MUST BE LAST — contains catch-all handler for unrecognized commands
        "gpt_reply",
     ]

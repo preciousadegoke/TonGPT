@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | 🟡 Approved for build (Finn Loop v2) |
+| **Status** | 🟢 Phase 1 SHIPPED (2026-07-14) · Phases 2–4 pending |
 | **Author** | Finn Loop (idea + research), approved by Legend |
 | **Date** | 2026-07-14 |
 | **Origin** | `docs/CATEGORY_PLAY.md` Move 2 — "the on-chain receipts ledger + public track-record page… it *is* the moat" |
@@ -164,6 +164,22 @@ getters: getRoot(dayIndex), getOwner()
 
 Phase order is deliberate: **labels take calendar time to mature** (30-day horizon), so the
 tracker ships first even though the shiny parts are 2–3.
+
+## 5.1 Phase 1 implementation notes (shipped)
+
+- `services/outcome_tracker.py` — labeling per §3.2; SQLite index (`data/receipts.db`,
+  rebuildable); byte-offset JSONL ingestion (torn-tail safe); injectable clock +
+  market fetcher; `MAX_FETCH_PER_PASS` backpressure (default 200/pass); catch-up
+  after downtime marks missed horizons `skipped` so one instant can never fake a
+  ≥72h sustained confirmation; final outcomes appended to the ledger with
+  `outcome_hash`. `track_record_stats()` ships recall, false-alarm rate, misses
+  list and calibration buckets — every rate with its denominator.
+- `services/verdict.py` — every new verdict record now carries `verdict_hash`
+  (canonical SHA-256, §3.1) — the future Merkle leaf.
+- `main.py` — `outcome_tracker` runs under `_spawn_supervised`
+  (`OUTCOME_TRACKER_ENABLED=false` to disable).
+- Tests: `tests/test_outcome_tracker.py` — 9 tests / 7 archetypes green, incl.
+  dip-recovery guard, idempotent re-run, downtime integrity, backpressure.
 
 ## 6. Acceptance criteria (per phase)
 
