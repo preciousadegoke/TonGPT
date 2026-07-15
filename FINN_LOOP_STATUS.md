@@ -79,6 +79,15 @@ a local build/smoke pass the previous environment couldn't run. This session ran
   docs/METHODOLOGY.md public rulebook. **SPEC-001 COMPLETE: 45 python checks
   + 16 + 8 contract scenarios green.** Awaiting 🚀 to push.
 
+## Next spec
+
+- **SPEC-002 — Guardian Gate** (`specs/SPEC-002-guardian-gate.md`): pre-trade
+  safety oracle for TON Agentic Wallets (launched 2026-04-28, no safety layer
+  exists). Verdict API + MCP server + gate receipts feeding the SPEC-001
+  accountability loop. Research: `docs/COMPETITIVE_LANDSCAPE.md` — execution
+  bots commoditized (Not.Trade leads), DYOR.io = closest competitor (score API,
+  no accountability), receipts moat confirmed intact. Awaiting /build.
+
 ## History
 
 - **2026-07-14** — Finn Loop v2 session 1: verification pass run; 4 test-harness
