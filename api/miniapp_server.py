@@ -787,6 +787,32 @@ async def guardian_check(address: str, request: Request):
     return resp
 
 
+@miniapp.get("/api/guardian/trackrecord")
+async def guardian_trackrecord(request: Request):
+    """SPEC-002 P2 — the graded track record, machine-readable. Same honesty
+    rules as /trackrecord: denominators on every rate, misses included,
+    nothing invented before data exists. Auth'd so callers are receipted
+    consumers, but does NOT consume the daily check quota (it's the trust
+    collateral, reading it should be free)."""
+    from services.guardian_gate import authenticate
+
+    if authenticate(request.headers.get("X-API-Key")) is None:
+        raise HTTPException(status_code=401, detail="missing or invalid API key")
+    try:
+        from services.outcome_tracker import pending_counts, track_record_stats
+        st = await track_record_stats()
+        pending = await pending_counts()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"guardian trackrecord unavailable: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=503, detail="track record temporarily unavailable")
+    st["maturing"] = pending.get("maturing", 0)
+    st["total_verdicts"] = pending.get("total", 0)
+    st["methodology"] = os.getenv(
+        "GUARDIAN_METHODOLOGY_URL",
+        "https://github.com/tongpt/tongpt/blob/main/docs/METHODOLOGY.md")
+    return st
+
+
 @miniapp.get("/api/health")
 async def miniapp_health_check():
     """Health check for mini-app API"""

@@ -147,7 +147,14 @@ async def guardian_command(message: types.Message):
         "2. Make it admin (so it can see all messages)\n"
         "3. Done — it only speaks when it sees a contract address\n\n"
         "It never posts ads, never DMs your members, and rate-limits itself. "
-        "Use /check as a reply to any message to trigger a scan manually.",
+        "Use /check as a reply to any message to trigger a scan manually.\n\n"
+        "🤖 <b>Building an AI agent or trading bot?</b> The same verdicts are "
+        "available as a machine-readable pre-trade gate — a keyed API "
+        "(<code>/api/guardian/check</code>) and a zero-dependency MCP server "
+        "(<code>scripts/guardian-mcp</code>) built for TON Agentic Wallets. "
+        "Calibrated <code>block/warn/pass</code> advice with our graded track "
+        "record attached, and every answer is a receipt you can verify with "
+        "/proof. Contact the operator for an API key.",
         parse_mode="HTML",
     )
 

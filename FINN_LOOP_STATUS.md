@@ -88,7 +88,10 @@ a local build/smoke pass the previous environment couldn't run. This session ran
   bots commoditized (Not.Trade leads), DYOR.io = closest competitor (score API,
   no accountability), receipts moat confirmed intact. **Phase 1 shipped** —
   guardian_gate service + /api/guardian/check endpoint + pipeline integration,
-  9/9 tests (54 python checks total). Next: /build Phase 2 (MCP server).
+  9/9 tests (54 python checks total). **Phase 2 shipped** — zero-dependency
+  MCP server (fail-closed on every error path, protocol selftest green),
+  /api/guardian/trackrecord endpoint, agent-dev README, /guardian pitch
+  upgrade. Next: Phase 3 (gate stats in /trackrecord + digest).
 
 ## History
 

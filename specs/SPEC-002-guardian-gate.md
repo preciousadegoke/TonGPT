@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | 🟢 Phase 1 SHIPPED (2026-07-15) · Phases 2–4 pending |
+| **Status** | 🟢 Phases 1–2 SHIPPED (2026-07-15) · Phase 3 pending · Phase 4 = operator |
 | **Author** | Finn Loop (research + spec), approved by Legend |
 | **Date** | 2026-07-15 |
 | **Origin** | `docs/COMPETITIVE_LANDSCAPE.md` §3–5 + `docs/CATEGORY_PLAY.md` agentic endgame ("nobody delegates money to an agent without a track record") |
@@ -145,6 +145,28 @@ Advice policy (env-tunable, documented in METHODOLOGY):
   address rejection, receipts + hash re-verification, FN-rate on pass,
   fail-closed unindexed, degraded warn, honest cold start, cache semantics,
   pipeline skip/leaf integration, auth + quota rollover.
+
+## 4.2 Phase 2 implementation notes (shipped)
+
+- `scripts/guardian-mcp/server.js` — **zero-dependency** MCP server (plain
+  JSON-RPC 2.0 over stdio + Node ≥18 global fetch; one auditable file, nothing
+  for agent devs to install). Tools: `ton_token_safety_check(address)` and
+  `ton_track_record()`. Tool descriptions carry the calibrated semantics
+  ("pass NEVER means safe") so the MODEL reading them learns the contract.
+  **Every failure mode — network error, timeout, 5xx, quota — returns
+  `isError` with "FAIL CLOSED: treat as block"**; the gate never fails open,
+  end to end. `node server.js --selftest` exercises the full protocol
+  (handshake, tools/list, pass/block round-trips, all error paths, ping,
+  method-not-found) against mocked HTTP.
+- `api/miniapp_server.py` — `GET /api/guardian/trackrecord` (keyed, but does
+  NOT consume the check quota — reading the trust collateral is free):
+  graded stats + maturing counts + methodology link; 503 (never fabricated
+  data) when stores are unavailable.
+- `scripts/guardian-mcp/README.md` — agent-dev onboarding: config JSON
+  (Claude Desktop / Claude Code / generic MCP shape), Agentic Wallets usage
+  instruction ("never buy on block"), failure-semantics contract, curl smoke.
+- `handlers/verify.py` — /guardian now pitches the API + MCP server to bot
+  and agent builders.
 
 ## 5. Acceptance criteria
 
