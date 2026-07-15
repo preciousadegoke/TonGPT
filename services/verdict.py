@@ -170,7 +170,11 @@ def render_card(v: Verdict, bot_username: str = "TonGPT_Bot", compact: bool = Fa
         lines.append(f"\n<code>{v.address}</code>")
     if v.stale:
         lines.append("\n⚠️ <i>Live data unavailable — showing last-known values.</i>")
-    lines.append(f"\n🧾 receipt <code>{v.verdict_id}</code> · {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(v.checked_at))}")
+    lines.append(
+        f"\n🧾 receipt <code>{v.verdict_id}</code> · "
+        f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(v.checked_at))} · "
+        f"verify: /proof {v.verdict_id}"
+    )
     lines.append(_FOOTER.format(bot_username=bot_username))
     return "\n".join(lines)
 

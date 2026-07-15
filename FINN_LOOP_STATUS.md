@@ -74,8 +74,10 @@ a local build/smoke pass the previous environment couldn't run. This session ran
   4 risks documented, 52 checks green. **Phase 3 shipped (2026-07-15)** —
   anchor_registry.tolk verified on real TVM bytecode (8 scenarios), Merkle
   engine + daily root loop + 3-state /proof (6 new checks; 42 python total).
-  Operator deploy runbook in spec §5.3. Awaiting 🚀; Phase 4 = polish
-  (Radar digest, card footer proof ids, methodology doc).
+  Operator deploy runbook in spec §5.3. **Phase 4 shipped** — weekly Radar
+  receipts digest (3 checks), card /proof hints, /help discoverability,
+  docs/METHODOLOGY.md public rulebook. **SPEC-001 COMPLETE: 45 python checks
+  + 16 + 8 contract scenarios green.** Awaiting 🚀 to push.
 
 ## History
 

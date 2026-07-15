@@ -522,6 +522,15 @@ async def on_startup():
     except Exception as e:
         logger.warning(f"⚠️ Receipts anchor not started: {type(e).__name__}: {e}")
 
+    # Weekly receipts digest (SPEC-001 P4) — posts the graded track record to
+    # the Radar channel. Self-disables without RADAR_CHANNEL_ID or graded data.
+    try:
+        from services.receipts_digest import digest_loop
+        _spawn_supervised("receipts_digest", digest_loop, restart=True)
+        logger.info("🧾 Receipts digest loop started (weekly)")
+    except Exception as e:
+        logger.warning(f"⚠️ Receipts digest not started: {type(e).__name__}: {e}")
+
     # Set bot status in Redis (with fallback if Redis unavailable)
     # FIX-8: Replace naked Redis calls with safe_redis
     safe_redis("set", "bot_startup_time", int(time.time()))

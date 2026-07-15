@@ -293,6 +293,53 @@ def format_token_data(token):
             'dex': 'DEX'
         }
 
+# --------------------------------------------------------------------------- #
+# AUDIT-FIX (privacy): durable chat persistence is consent-gated.
+# Consent state is cached in Redis for 1h so this adds at most one Engine
+# lookup per user-hour. Failure to determine consent = do NOT persist.
+# --------------------------------------------------------------------------- #
+CONSENT_VERSION = "v1"
+
+
+async def _has_consent(user_id: int) -> bool:
+    cache_key = f"consent:{CONSENT_VERSION}:{user_id}"
+    try:
+        if redis_client:
+            cached = redis_client.get(cache_key)
+            if cached is not None:
+                val = cached.decode() if isinstance(cached, (bytes, bytearray)) else str(cached)
+                return val == "1"
+    except Exception:  # noqa: BLE001
+        pass
+    consented = False
+    try:
+        user = await engine_client.get_user(user_id)
+        consented = bool(user) and user.get("consentVersion") == CONSENT_VERSION
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"consent lookup failed for {user_id}: {e}")
+    try:
+        if redis_client:
+            redis_client.set(cache_key, "1" if consented else "0", ex=3600)
+    except Exception:  # noqa: BLE001
+        pass
+    return consented
+
+
+async def _save_chat_if_consented(user_id: int, user_message: str, ai_response: str) -> None:
+    """Persist the conversation to the Engine ONLY if the user consented."""
+    try:
+        if await _has_consent(user_id):
+            await engine_client.save_chat_message(
+                telegram_id=user_id,
+                user_message=user_message,
+                ai_response=ai_response,
+            )
+        else:
+            logger.debug(f"chat not persisted (no consent): {user_id}")
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"consented chat save failed for {user_id}: {e}")
+
+
 # ==================== ENHANCED CORE COMMANDS ====================
 
 @router.message(Command("start"))
@@ -343,15 +390,34 @@ async def start_command(message: types.Message):
         except Exception as e:
             logger.warning(f"Subscription check failed: {e}")
         
+        # Personalized onboarding: returning users with a watchlist get a
+        # "welcome back" with their tokens; new users get the guided intro.
+        watch_line = ""
+        try:
+            from handlers.watchlist import _entries as _wl_entries
+            wl = _wl_entries(user_id)
+            if wl:
+                syms = ", ".join(s for s, _ in wl[:5])
+                watch_line = (
+                    f"\n👀 Welcome back! You're watching: <b>{syms}</b>"
+                    f"{'…' if len(wl) > 5 else ''} — check them with /watchlist\n"
+                )
+        except Exception as e:
+            logger.debug(f"start watchlist lookup skipped: {e}")
+
         start_text = (
-            f"👋 Hello {user.first_name}!{subscription_status}\n\n"
+            f"👋 Hello {user.first_name}!{subscription_status}\n"
+            f"{watch_line}\n"
             "I'm TonGPT, your smart AI analyst for TON memecoins. "
-            "Ask me about trending memecoins, market analysis and more.\n\n"
+            "Ask me about trending memecoins, market analysis and more — "
+            "I remember our conversations, so just talk to me naturally.\n\n"
             "🔥 Pure TON memecoin focus - no major cryptos!\n\n"
             "💡 Quick start:\n"
-            "• /scan - See trending memecoins\n"  
-            "• /ask [question] - AI analysis\n"
-            "• /app - Web interface\n"
+            "• 🛡 Forward me ANY token or shill message - instant risk verdict\n"
+            "• /check NOT - Scan a token for rug signals\n"
+            "• /guardian - Add me to your group as a rug radar\n"
+            "• /scan - See trending memecoins\n"
+            "• /watch NOT - Build your watchlist\n"
             "• /help - All commands\n\n"
             "🚀 Use /subscription to check your plan!"
         )
@@ -384,18 +450,31 @@ async def help_command(message: types.Message, **kwargs):
     help_text = (
         "🤖 <b>TonGPT Bot Commands</b>\n\n"
         
+        "🛡 <b>Rug Radar (free for everyone):</b>\n"
+        "• /check [token] - Instant risk verdict on any token\n"
+        "• Forward me any shill message - I'll scan it automatically\n"
+        "• /guardian - Add me to your group to auto-scan every contract\n"
+        "• /radar - Channel: every new TON pair, auto-scanned\n"
+        "• /trackrecord - My graded public track record (misses included)\n"
+        "• /proof [receipt id] - Verify any past verdict cryptographically\n\n"
+
         "🔥 <b>Pure Memecoin Analysis:</b>\n"
         "• /scan - Discover trending TON memecoins ONLY\n"
         "• /trending - Pure memecoin market trends\n"
-        "• /info [contract] - Token details by address\n\n"
-        
+        "• /info [contract] - Token details by address\n"
+        "• /compare NOT FISH - Compare 2-4 tokens side by side\n\n"
+
+        "👀 <b>Watchlist & Alerts:</b>\n"
+        "• /watch [token] - Add a token to your watchlist\n"
+        "• /watchlist - Live prices for your watched tokens\n"
+        "• /unwatch [token] - Remove a token\n"
+        "• /alerts - Set a price alert\n\n"
+
         "💬 <b>AI Assistance:</b>\n"
         "• /ask [question] - AI analysis (costs 1 credit)\n"
-        "• Just message me directly for AI chat\n\n"
-        
-        "🐦 <b>Social Intelligence:</b>\n"
-        "• /X - Twitter/X monitoring dashboard\n"
-        "• /influencer - Crypto influencer tracking\n\n"
+        "• Just message me directly for AI chat\n"
+        "• /memory - See what I remember about our chats\n"
+        "• /forget - Erase my memory of you\n\n"
         
         "💎 <b>Subscription:</b>\n"
         "• /subscription - View plan details\n"
@@ -1045,13 +1124,14 @@ async def chat_handler(message: types.Message):
                 await message.answer("🤖 Sorry, I'm having trouble processing your request. Please try again.")
                 return
             
-            # Save conversation to Engine API
+            # Save conversation to Engine API — ONLY with recorded consent.
+            # AUDIT-FIX (privacy): the mini-app collects ConsentVersion "v1",
+            # but this bot path previously persisted chat to Postgres for
+            # everyone, consented or not. Now the durable copy is gated on
+            # consent; the ephemeral Redis context (TTL'd) still provides
+            # conversational continuity for non-consented users.
             asyncio.create_task(
-                engine_client.save_chat_message(
-                    telegram_id=user_id,
-                    user_message=user_message,
-                    ai_response=ai_response
-                )
+                _save_chat_if_consented(user_id, user_message, ai_response)
             )
             
             # Send response

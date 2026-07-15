@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | 🟢 Phases 1–3 SHIPPED (2026-07-15) · Phase 4 (polish) pending · contract deploy = operator step |
+| **Status** | ✅ ALL PHASES SHIPPED (2026-07-15) · contract deploy + testnet soak = operator runbook §5.3 |
 | **Author** | Finn Loop (idea + research), approved by Legend |
 | **Date** | 2026-07-14 |
 | **Origin** | `docs/CATEGORY_PLAY.md` Move 2 — "the on-chain receipts ledger + public track-record page… it *is* the moat" |
@@ -234,6 +234,21 @@ tracker ships first even though the shiny parts are 2–3.
 - Crash-safety note: a crash between ledger append and DB commit can produce a
   duplicate `anchor` ledger record on the next pass — roots are deterministic,
   so both records carry the SAME root; readers take the first. Documented, harmless.
+
+## 5.4 Phase 4 implementation notes (shipped)
+
+- `services/receipts_digest.py` — weekly Radar-channel digest: graded counts,
+  recall + false alarms with denominators, misses count, calibration one-liner,
+  anchored-days status, /trackrecord + /proof CTA. Never posts before data
+  exists; weekly dedup via the shared meta table; supervised loop in `main.py`
+  (`RECEIPTS_DIGEST_ENABLED`, interval `RECEIPTS_DIGEST_INTERVAL`).
+- Verdict card footer now prints `verify: /proof <id>` — every card teaches
+  the verification habit.
+- `/help` lists /trackrecord and /proof.
+- `docs/METHODOLOGY.md` — public, versioned grading rulebook (labels,
+  thresholds, honesty rules, verification steps, known limitations).
+- Tests: `tests/test_receipts_digest.py` — 3 checks (no-data gating, honest
+  render + weekly dedup, channel/bot gating).
 
 ## 6. Acceptance criteria (per phase)
 
