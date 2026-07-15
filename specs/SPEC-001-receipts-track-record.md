@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | 🟢 Phases 1–2 SHIPPED (2026-07-14) · Phases 3–4 pending |
+| **Status** | 🟢 Phases 1–3 SHIPPED (2026-07-15) · Phase 4 (polish) pending · contract deploy = operator step |
 | **Author** | Finn Loop (idea + research), approved by Legend |
 | **Date** | 2026-07-14 |
 | **Origin** | `docs/CATEGORY_PLAY.md` Move 2 — "the on-chain receipts ledger + public track-record page… it *is* the moat" |
@@ -198,6 +198,42 @@ tracker ships first even though the shiny parts are 2–3.
   `main.py` registers `trackrecord` before `verify`.
 - Tests: `tests/test_trackrecord.py` — 7 checks incl. denominator-sum property,
   HTML-injection regression, hostile lookup inputs.
+
+## 5.3 Phase 3 implementation notes (shipped)
+
+- `tongpt-subscription/contracts/anchor_registry.tolk` — minimal append-only
+  registry (Tolk 1.2): ops `Anchor` (owner-gated, day immutable once set, exit
+  102/103) and `ChangeOwner`; getters `getRoot`/`hasRoot`/`getOwner`; empty-body
+  top-ups allowed; holds no funds, gates no features. **Verified against real
+  compiled TVM bytecode**: 8 sandbox scenarios green via
+  `node scripts/verify_anchor_contract.js` (jest twin: `tests/AnchorRegistry.spec.ts`,
+  supports `ANCHOR_BOC_CACHE` to skip the wasm compile).
+- `services/receipts_anchor.py` — sorted-pair SHA-256 Merkle engine (leaves =
+  the canonical receipt hashes; 32-byte digests, so leaf/interior confusion is
+  structurally impossible); daily `anchor_once()` computes roots for completed
+  UTC days (idempotent, `ANCHOR_BACKFILL_DAYS` window, empty days skipped),
+  appends `anchor` records to the ledger + an `anchors` SQLite table;
+  `get_anchor_info(hash)` serves verifying inclusion proofs;
+  `mark_anchored(day, tx)` records the operator's tx exactly once.
+- **No signing key in the bot (deliberate):** the loop computes + logs
+  `(dayIndex, root)`; the operator sends it with `scripts/anchor_payload.js`
+  (prints the base64 BOC body + a ton:// deep link). The contract's append-only
+  property means even a stolen operator key cannot rewrite anchored history.
+- `handlers/trackrecord.py` — /proof now renders three honest states:
+  pending → root computed (awaiting operator tx) → anchored (tx shown), with
+  the inclusion proof and a verified-against-root check.
+- `main.py` — `receipts_anchor` loop under `_spawn_supervised`
+  (`ANCHOR_ENABLED=false` to disable).
+- Tests: `tests/test_receipts_anchor.py` — 6 checks (Merkle properties incl.
+  odd/single/tamper, idempotent anchoring, backfill window, tx marking,
+  proof serving, 3-state render).
+- **Deploy runbook (operator):** compile via `scripts/verify_anchor_contract.js`
+  path or blueprint; deploy with owner = ops wallet; set
+  `ANCHOR_CONTRACT_ADDRESS` in .env; send daily payloads from the anchor log;
+  confirm with `mark_anchored`. Testnet soak before mainnet per §5.
+- Crash-safety note: a crash between ledger append and DB commit can produce a
+  duplicate `anchor` ledger record on the next pass — roots are deterministic,
+  so both records carry the SAME root; readers take the first. Documented, harmless.
 
 ## 6. Acceptance criteria (per phase)
 

@@ -511,6 +511,17 @@ async def on_startup():
     except Exception as e:
         logger.warning(f"⚠️ Outcome tracker not started: {type(e).__name__}: {e}")
 
+    # Receipts anchor (SPEC-001 P3) — computes daily Merkle roots over the
+    # receipts ledger and serves inclusion proofs. Does NOT send transactions
+    # (the bot holds no key); the operator anchors roots on-chain via
+    # scripts/anchor_payload.js. Off-switch: ANCHOR_ENABLED=false.
+    try:
+        from services.receipts_anchor import anchor_loop
+        _spawn_supervised("receipts_anchor", anchor_loop, restart=True)
+        logger.info("⛓ Receipts anchor loop started (daily Merkle roots)")
+    except Exception as e:
+        logger.warning(f"⚠️ Receipts anchor not started: {type(e).__name__}: {e}")
+
     # Set bot status in Redis (with fallback if Redis unavailable)
     # FIX-8: Replace naked Redis calls with safe_redis
     safe_redis("set", "bot_startup_time", int(time.time()))

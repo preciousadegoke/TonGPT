@@ -138,8 +138,11 @@ def _footer() -> str:
     )
 
 
-def render_proof(hit: Optional[Dict[str, Any]], query: str) -> str:
-    """Render a receipt lookup. Never overclaims: anchoring status is explicit."""
+def render_proof(hit: Optional[Dict[str, Any]], query: str,
+                 anchor: Optional[Dict[str, Any]] = None) -> str:
+    """Render a receipt lookup. Never overclaims: anchoring status is explicit —
+    `anchor` (from services.receipts_anchor.get_anchor_info) upgrades the
+    footer from "pending" to the day's root + inclusion proof when computed."""
     if hit is None:
         return (
             f"🔍 No receipt found for <code>{_esc((query or '')[:64])}</code>.\n"
@@ -176,15 +179,49 @@ def render_proof(hit: Optional[Dict[str, Any]], query: str) -> str:
         )
         if rec.get("outcome_hash"):
             lines.append(f"\n🔐 Content hash:\n<code>{rec['outcome_hash']}</code>")
+    lines.append(_render_anchor_status(anchor))
     lines.append(
-        "\n⛓ <b>On-chain anchor:</b> <i>pending — Phase 3 anchors a daily "
-        "Merkle root of all receipt hashes in a TON registry contract. This "
-        "hash is already the exact leaf that will be anchored, so the receipt "
-        "cannot be silently rewritten later.</i>\n"
         "<i>To verify yourself: take the receipt's JSON from the public ledger, "
         "drop the hash fields, serialize with sorted keys and no spaces, and "
         "SHA-256 it — you get the hash above.</i>"
     )
+    return "\n".join(lines)
+
+
+def _render_anchor_status(anchor: Optional[Dict[str, Any]]) -> str:
+    """Three honest states: no root yet / root computed / anchored on-chain."""
+    if not anchor or anchor.get("status") == "pending" or not anchor.get("root"):
+        return (
+            "\n⛓ <b>On-chain anchor:</b> <i>pending — this hash is the exact "
+            "Merkle leaf that will be anchored once its day's root is computed "
+            "and sent to the registry contract, so the receipt cannot be "
+            "silently rewritten later.</i>"
+        )
+    lines = [
+        f"\n⛓ <b>Merkle anchor</b> · day {anchor.get('day')} "
+        f"({anchor.get('count')} receipts)",
+        f"root: <code>{anchor.get('root')}</code>",
+    ]
+    proof = anchor.get("proof")
+    if proof is not None:
+        if proof:
+            shown = proof if len(proof) <= 4 else proof[:4]
+            lines.append("inclusion proof (sorted-pair SHA-256):")
+            for p in shown:
+                lines.append(f"  <code>{p}</code>")
+            if len(proof) > 4:
+                lines.append(f"  …and {len(proof) - 4} more siblings")
+        else:
+            lines.append("<i>(only receipt of its day — the root IS this hash's parent set)</i>")
+        if anchor.get("verified"):
+            lines.append("✅ proof verifies against the recorded root")
+    if anchor.get("tx"):
+        lines.append(f"⛓ on-chain: <code>{_esc(anchor['tx'])}</code>")
+    else:
+        lines.append(
+            "🕐 <i>root computed, awaiting the operator's on-chain anchor tx "
+            "(the registry contract is append-only — once sent, immutable).</i>"
+        )
     return "\n".join(lines)
 
 
@@ -231,7 +268,16 @@ async def proof_command(message: types.Message, command: CommandObject = None):
     except Exception as e:  # noqa: BLE001
         logger.warning(f"proof lookup failed: {type(e).__name__}: {e}")
         hit = None
-    await message.reply(render_proof(hit, query), parse_mode="HTML")
+    anchor = None
+    if hit:
+        h = hit["record"].get("verdict_hash") or hit["record"].get("outcome_hash")
+        if h:
+            try:
+                from services.receipts_anchor import get_anchor_info
+                anchor = await get_anchor_info(h)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"anchor info failed: {type(e).__name__}: {e}")
+    await message.reply(render_proof(hit, query, anchor), parse_mode="HTML")
 
 
 __all__ = ["router", "render_trackrecord", "render_proof"]

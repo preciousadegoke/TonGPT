@@ -71,8 +71,11 @@ a local build/smoke pass the previous environment couldn't run. This session ran
   verdict_hash + supervised loop (9/9 tests); /trackrecord + /proof graded
   card with HTML-escape hardening (7/7 tests). **/review passed** —
   docs/SPEC001_REVIEW.md: 2 findings fixed (id-prefix lookup, age_days),
-  4 risks documented, 52 checks green. Staged for merge — awaiting 🚀.
-  Next: Phase 3 (Tolk anchor registry + Merkle proofs).
+  4 risks documented, 52 checks green. **Phase 3 shipped (2026-07-15)** —
+  anchor_registry.tolk verified on real TVM bytecode (8 scenarios), Merkle
+  engine + daily root loop + 3-state /proof (6 new checks; 42 python total).
+  Operator deploy runbook in spec §5.3. Awaiting 🚀; Phase 4 = polish
+  (Radar digest, card footer proof ids, methodology doc).
 
 ## History
 
