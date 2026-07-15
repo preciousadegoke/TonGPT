@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | 🟡 Approved for build (Finn Loop v2) |
+| **Status** | 🟢 Phase 1 SHIPPED (2026-07-15) · Phases 2–4 pending |
 | **Author** | Finn Loop (research + spec), approved by Legend |
 | **Date** | 2026-07-15 |
 | **Origin** | `docs/COMPETITIVE_LANDSCAPE.md` §3–5 + `docs/CATEGORY_PLAY.md` agentic endgame ("nobody delegates money to an agent without a track record") |
@@ -123,6 +123,28 @@ Advice policy (env-tunable, documented in METHODOLOGY):
 | **2** | MCP server + agent-dev README + example configs; /guardian text upgrade | 1–2 sessions |
 | **3** | Gate accountability stats ("screened/blocked/confirmed") folded into /trackrecord + weekly digest | 1 session |
 | **4** | Partnerships/distribution (Agentic Wallets ecosystem listing, Not.Trade/explorer integrations) — operator-led, spec provides the pitch page | n/a (operator) |
+
+## 4.1 Phase 1 implementation notes (shipped)
+
+- `services/guardian_gate.py` — `gate_check()` with the calibrated advice
+  policy (unindexed/unknown/high→block, medium/degraded→warn, low→pass with
+  the observed false-negative rate inline); per-token 60s cache (bounded);
+  track-record block cached 5min with honest `insufficient_history` cold
+  start; every check (cached included) appends a hashed `gate_check` receipt
+  with the CALLER STORED AS A SHORT HASH, never raw. Address validation
+  (friendly EQ/UQ/kQ/0Q + raw wc:hex) runs before any lookup or write.
+- `api/miniapp_server.py` — `GET /api/guardian/check/{address}`: X-API-Key
+  auth (`GUARDIAN_API_KEYS="name:key,…"`, keys ≥16 chars), per-key daily quota
+  (`GUARDIAN_FREE_PER_DAY`, in-process v1 — documented), 400/401/429 error
+  paths; sits behind the existing per-IP limiter middleware (RL-001).
+- Pipeline integration: `outcome_tracker` ingestion skips `gate_check`
+  records; `receipts_anchor` treats `gate_hash` as a Merkle leaf, so gate
+  receipts are anchored daily like all others; `canonical_hash` excludes
+  `gate_hash` for third-party re-verification.
+- Tests: `tests/test_guardian_gate.py` — 9 checks: policy matrix, hostile
+  address rejection, receipts + hash re-verification, FN-rate on pass,
+  fail-closed unindexed, degraded warn, honest cold start, cache semantics,
+  pipeline skip/leaf integration, auth + quota rollover.
 
 ## 5. Acceptance criteria
 

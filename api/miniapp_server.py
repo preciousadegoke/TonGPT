@@ -354,28 +354,9 @@ async def get_ston_pools():
 
 @miniapp.get("/api/X/sentiment")
 async def get_X_sentiment():
-    """Get X sentiment analysis for mini-app"""
-    try:
-        from services.tweet_sentiment import analyze_tweets
-        posts = analyze_tweets()
-        if not posts:
-            return {"sentiment": "neutral", "posts": [], "summary": "No recent data"}
-        
-        # Calculate overall sentiment
-        bullish = len([p for p in posts if p['sentiment'] == 'bullish'])
-        bearish = len([p for p in posts if p['sentiment'] == 'bearish'])
-        neutral = len(posts) - bullish - bearish
-        
-        overall = "bullish" if bullish > bearish else "bearish" if bearish > bullish else "neutral"
-        
-        return {
-            "sentiment": overall,
-            "posts": posts[:3],
-            "summary": f"{bullish} bullish, {bearish} bearish, {neutral} neutral"
-        }
-    except Exception as e:
-        logger.error(f"❌ X sentiment API error: {e}")
-        return {"sentiment": "neutral", "posts": [], "summary": "Data unavailable"}
+    """X/Twitter integration removed (2026-07). Kept as an explicit
+    'unavailable' response so an old mini-app build doesn't get a 404."""
+    return {"sentiment": "neutral", "posts": [], "summary": "Social sentiment feature removed"}
 
 @miniapp.post("/api/scan-token")
 async def scan_token(request: Request, data: dict):
@@ -785,6 +766,27 @@ async def wallet_balance(address: str):
         raise HTTPException(status_code=502, detail="Balance unavailable")
 
 
+@miniapp.get("/api/guardian/check/{address}")
+async def guardian_check(address: str, request: Request):
+    """SPEC-002 Guardian Gate — machine-readable pre-trade safety check.
+
+    Auth: X-API-Key (GUARDIAN_API_KEYS env). Advice semantics: block|warn|pass,
+    where pass NEVER means safe — the calibrated false-negative rate ships in
+    the response. Every check is a ledgered, hashed, later-graded receipt.
+    """
+    from services.guardian_gate import authenticate, consume_quota, gate_check
+
+    caller = authenticate(request.headers.get("X-API-Key"))
+    if caller is None:
+        raise HTTPException(status_code=401, detail="missing or invalid API key")
+    if not consume_quota(caller):
+        raise HTTPException(status_code=429, detail="daily check quota exceeded")
+    resp = await gate_check(address, caller)
+    if resp.get("error") == "invalid_address":
+        raise HTTPException(status_code=400, detail=resp["detail"])
+    return resp
+
+
 @miniapp.get("/api/health")
 async def miniapp_health_check():
     """Health check for mini-app API"""
@@ -851,22 +853,5 @@ async def get_trending_alias():
 
 @miniapp.get("/api/social")
 async def get_social_alias():
-    """Alias for /api/X/sentiment"""
-    try:
-        from services.tweet_sentiment import analyze_tweets
-        posts = analyze_tweets()
-        if not posts: return {"sentiment": "neutral", "posts": [], "summary": "No recent data"}
-        
-        bullish = len([p for p in posts if p['sentiment'] == 'bullish'])
-        bearish = len([p for p in posts if p['sentiment'] == 'bearish'])
-        neutral = len(posts) - bullish - bearish
-        overall = "bullish" if bullish > bearish else "bearish" if bearish > bullish else "neutral"
-        
-        return {
-            "sentiment": overall,
-            "posts": posts[:3],
-            "summary": f"{bullish} bullish, {bearish} bearish, {neutral} neutral"
-        }
-    except Exception as e:
-        logger.error(f"❌ /api/social failed: {e}")
-        return {"sentiment": "neutral", "posts": [], "summary": "Data unavailable"}
+    """Alias for /api/X/sentiment — X/Twitter integration removed (2026-07)."""
+    return {"sentiment": "neutral", "posts": [], "summary": "Social sentiment feature removed"}

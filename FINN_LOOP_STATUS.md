@@ -86,7 +86,9 @@ a local build/smoke pass the previous environment couldn't run. This session ran
   exists). Verdict API + MCP server + gate receipts feeding the SPEC-001
   accountability loop. Research: `docs/COMPETITIVE_LANDSCAPE.md` — execution
   bots commoditized (Not.Trade leads), DYOR.io = closest competitor (score API,
-  no accountability), receipts moat confirmed intact. Awaiting /build.
+  no accountability), receipts moat confirmed intact. **Phase 1 shipped** —
+  guardian_gate service + /api/guardian/check endpoint + pipeline integration,
+  9/9 tests (54 python checks total). Next: /build Phase 2 (MCP server).
 
 ## History
 

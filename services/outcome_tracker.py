@@ -114,7 +114,8 @@ def canonical_hash(record: Dict[str, Any]) -> str:
     Any pre-existing hash field is excluded so the hash is reproducible from
     the record content itself.
     """
-    clean = {k: v for k, v in record.items() if k not in ("verdict_hash", "outcome_hash")}
+    clean = {k: v for k, v in record.items()
+             if k not in ("verdict_hash", "outcome_hash", "gate_hash")}
     blob = json.dumps(clean, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -199,7 +200,7 @@ def _ingest_ledger(conn: sqlite3.Connection) -> int:
             except json.JSONDecodeError:
                 log.warning("outcome_ledger_bad_line", head=line[:80])
                 continue
-            if rec.get("type") in ("outcome", "anchor"):
+            if rec.get("type") in ("outcome", "anchor", "gate_check"):
                 continue                    # our own appended records
             vid = rec.get("verdict_id")
             if not vid:

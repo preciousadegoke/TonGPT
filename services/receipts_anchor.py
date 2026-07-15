@@ -141,6 +141,8 @@ def _record_leaf_and_ts(rec: Dict[str, Any]) -> Optional[Tuple[str, float]]:
         return None
     if t == "outcome":
         h, ts = rec.get("outcome_hash"), rec.get("finalized_at")
+    elif t == "gate_check":
+        h, ts = rec.get("gate_hash"), rec.get("checked_at")
     else:
         h, ts = rec.get("verdict_hash"), rec.get("checked_at")
     if not h or not ts:
