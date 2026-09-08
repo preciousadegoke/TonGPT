@@ -16,37 +16,57 @@ router = Router()
 # Display emoji per tier (presentation only — never a source of price data).
 _PLAN_EMOJI = {"starter": "🥉", "pro": "🥈", "pro_plus": "🥇", "elite": "💎"}
 
-# Plan configuration (Display only)
-TIER_PRICES = {
-    "Basic": 5.0,
-    "Premium": 15.0
+# DISP-001 / LIMIT-INCONSISTENCY-001: every limit and price shown here derives
+# from core.pricing.PLANS + the rate limiter's real free-tier cap. There are NO
+# display-only price/limit tables in this module anymore — they drifted from
+# what the bot actually enforced (Free was shown 100/day but throttled at 25).
+import os
+
+# Engine plan names ("Starter", "ProPlus", …) -> canonical pricing keys.
+_ENGINE_TO_KEY = {
+    "starter": "starter",
+    "pro": "pro",
+    "proplus": "pro_plus",
+    "pro_plus": "pro_plus",
+    "pro+": "pro_plus",
+    "elite": "elite",
 }
 
-TIER_LIMITS = {
-    "Free": 100,
-    "Basic": 1000,
-    "Premium": 10000
-}
+
+def _free_daily_limit() -> int:
+    """The free tier's REAL daily cap — same env the rate limiter reads."""
+    try:
+        return int(os.getenv("RATE_LIMIT_FREE_PER_DAY", "25"))
+    except ValueError:
+        return 25
+
+
+def _daily_limit_label(plan_raw: str) -> str:
+    key = _ENGINE_TO_KEY.get((plan_raw or "").strip().lower())
+    if key is None:
+        return f"{_free_daily_limit()} AI queries"
+    qpd = PLANS[key]["queries_per_day"]
+    return "Unlimited AI queries" if qpd == -1 else f"{qpd} AI queries"
+
 
 @router.message(Command("subscription", "sub"))
 async def subscription_status(message: types.Message):
     """Show user subscription status via C# Engine"""
     user_id = message.from_user.id
-    
+
     try:
         user_status = await engine_client.get_user_status(str(user_id))
-        plan = user_status.get("plan", "Free").title()
+        plan_raw = user_status.get("plan", "Free")
+        key = _ENGINE_TO_KEY.get((plan_raw or "").strip().lower())
+        plan_display = PLANS[key]["name"].replace(" Plan", "") if key else "Free"
         expiry = user_status.get("expiry")
-        
-        # Determine credits based on Plan (using static definitions for now)
-        credits_remaining = TIER_LIMITS.get(plan, 100) # Default/Free
-        
+
         status_text = (
             f"💎 <b>Your Subscription</b>\n\n"
-            f"📋 Plan: <b>{plan}</b>\n"
-            f"⚡ Credits: <b>{credits_remaining}</b> (Daily)\n"
+            f"📋 Plan: <b>{plan_display}</b>\n"
+            f"⚡ Daily limit: <b>{_daily_limit_label(plan_raw)}</b>\n"
         )
-        
+
         if expiry:
             # Parse expiry date for display
             try:
@@ -56,18 +76,26 @@ async def subscription_status(message: types.Message):
                 status_text += f"📅 Expires: <b>{expiry_str}</b>\n"
             except:
                 status_text += f"📅 Expires: <b>{expiry}</b>\n"
-        
-        if plan == "Free":
-            status_text += f"\n🚀 <b>Upgrade for more features:</b>\n"
-            status_text += f"• Basic: {TIER_PRICES['Basic']} TON/month\n"
-            status_text += f"• Premium: {TIER_PRICES['Premium']} TON/month\n"
-            status_text += f"\nUse /upgrade to upgrade your plan"
-        
+
+        if key is None:  # Free tier — upsell with REAL prices from core.pricing
+            status_text += "\n🚀 <b>Upgrade for more features:</b>\n"
+            for k in PLAN_ORDER:
+                p = PLANS[k]
+                qpd = "Unlimited" if p["queries_per_day"] == -1 else f"{p['queries_per_day']}/day"
+                status_text += (
+                    f"• {p['name'].replace(' Plan', '')}: "
+                    f"{p['price_stars']}⭐ or {p['price_ton']} TON — {qpd}\n"
+                )
+            status_text += "\nUse /upgrade to upgrade your plan"
+
         await message.reply(status_text, parse_mode="HTML")
 
     except Exception as e:
         logger.error(f"Failed to check subscription: {e}")
-        await message.reply("Could not retrieve subscription status. Please try again later.")
+        await message.reply(
+            "😕 I couldn't reach the subscription service just now.\n"
+            "Your plan is unaffected — please try /subscription again in a minute."
+        )
 
 @router.message(Command("connect"))
 async def connect_wallet(message: types.Message):

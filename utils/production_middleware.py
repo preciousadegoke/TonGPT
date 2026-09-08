@@ -40,10 +40,16 @@ class RateLimitMiddleware(BaseMiddleware):
         is_limited, rate_info = await self.rate_limiter.check_rate_limit(user_id, tier)
         
         if is_limited:
+            # Derive "current" defensively: check_rate_limit returns limit/remaining
+            # (not "current"), so compute it and fall back safely to avoid KeyErrors.
+            limit = rate_info.get("limit", 0)
+            remaining = rate_info.get("remaining", 0)
+            current = rate_info.get("current", max(limit - remaining, 0))
+            reset_time = rate_info.get("reset_time", int(time.time()))
             await event.reply(
                 f"🚫 <b>Rate limit exceeded!</b>\n\n"
-                f"⏰ You've made {rate_info['current']}/{rate_info['limit']} requests this hour.\n"
-                f"🔄 Reset time: <code>{time.strftime('%H:%M', time.localtime(rate_info['reset_time']))}</code>\n\n"
+                f"⏰ You've made {current}/{limit} requests this hour.\n"
+                f"🔄 Reset time: <code>{time.strftime('%H:%M', time.localtime(reset_time))}</code>\n\n"
                 f"💎 Upgrade to Basic or Premium for higher limits:\n"
                 f"/upgrade",
                 parse_mode="HTML"

@@ -39,6 +39,13 @@ log = structlog.get_logger(__name__)
 QUEUE_FILE = os.getenv("ACTIVATION_QUEUE_FILE", os.path.join("data", "pending_activations.jsonl"))
 RETRY_INTERVAL = int(os.getenv("ACTIVATION_RETRY_INTERVAL", "60"))   # seconds between drains
 ALERT_AFTER_ATTEMPTS = int(os.getenv("ACTIVATION_ALERT_AFTER", "10"))  # escalate after N failures
+# QUEUE-001: poison items no longer retry forever. After this many attempts the
+# item is moved to a dead-letter file for manual ops review (money is never
+# deleted — just parked where it can't clog the live queue).
+DEAD_LETTER_AFTER = int(os.getenv("ACTIVATION_DEAD_LETTER_AFTER", "120"))
+DEAD_LETTER_FILE = os.getenv(
+    "ACTIVATION_DEAD_LETTER_FILE", os.path.join("data", "dead_activations.jsonl")
+)
 
 # Serializes all reads/writes of the queue file within this process.
 _lock = asyncio.Lock()
@@ -76,6 +83,19 @@ def _read_all() -> List[Dict[str, Any]]:
                 # Skip a torn/partial line rather than losing the whole queue.
                 log.warning("activation_queue_bad_line", line=line[:120])
     return items
+
+
+def _append_dead_letter(item: Dict[str, Any]) -> None:
+    """Persist a poison item to the dead-letter file (QUEUE-001)."""
+    d = os.path.dirname(DEAD_LETTER_FILE)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    item = dict(item)
+    item["dead_lettered_at"] = time.time()
+    with open(DEAD_LETTER_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(item, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def _write_all(items: List[Dict[str, Any]]) -> None:
@@ -136,6 +156,18 @@ async def drain_once() -> int:
     if not items:
         return 0
 
+    # QUEUE-002: dedupe the batch on external_id so a double-enqueued payment
+    # only produces one activation attempt (and one user notification).
+    seen_ids: set = set()
+    deduped: List[Dict[str, Any]] = []
+    for it in items:
+        ext = it.get("external_id")
+        if ext in seen_ids:
+            continue
+        seen_ids.add(ext)
+        deduped.append(it)
+    items = deduped
+
     activated = 0
     still_pending: List[Dict[str, Any]] = []
 
@@ -170,10 +202,27 @@ async def drain_once() -> int:
             await _alert(it, reason="permanent_failure")
         else:
             it["attempts"] = int(it.get("attempts", 0)) + 1
-            if it["attempts"] == ALERT_AFTER_ATTEMPTS:
+            # QUEUE-001: ">=" + modulo so the alert can't be skipped by a
+            # double-increment and re-fires periodically during a long outage
+            # (once per ALERT_AFTER_ATTEMPTS further failures, not just once).
+            if (it["attempts"] >= ALERT_AFTER_ATTEMPTS
+                    and it["attempts"] % ALERT_AFTER_ATTEMPTS == 0):
                 log.error("activation_retry_threshold_reached", item=it)
                 await _alert(it, reason="retry_threshold")
-            still_pending.append(it)
+            if it["attempts"] >= DEAD_LETTER_AFTER:
+                # Poison item: park it in the dead-letter file for manual
+                # review instead of retrying forever (QUEUE-001).
+                log.error("activation_dead_lettered", item=it)
+                await _alert(it, reason="dead_letter")
+                try:
+                    await asyncio.to_thread(_append_dead_letter, it)
+                except Exception as dl_err:  # noqa: BLE001
+                    # Could not persist to dead-letter — keep it in the live
+                    # queue rather than silently dropping a paid activation.
+                    log.error("activation_dead_letter_write_failed", err=str(dl_err))
+                    still_pending.append(it)
+            else:
+                still_pending.append(it)
 
     # Rewrite the queue: keep still-pending items + anything enqueued during the
     # drain (identified by external_id not in the batch we just handled).

@@ -25,51 +25,40 @@ async def initialize_gpt_handler(config: Dict[str, Any]) -> Optional[Any]:
         logger.error(f"❌ Failed to initialize GPT handler: {e}")
         return None
 
-async def initialize_X_monitor(config: Dict[str, Any]) -> Optional[Any]:
-    """Initialize X monitoring service"""
-    if not all([config["X_API_KEY"], config["X_API_SECRET"], config["X_BEARER_TOKEN"]]):
-        logger.warning("⚠ X API credentials incomplete - monitoring disabled")
-        return None
-    
-    try:
-        from services.X_monitor import XMonitor
-        X_monitor = XMonitor()
-        logger.info("✅ X monitor initialized")
-        return X_monitor
-        
-    except ImportError:
-        logger.warning("⚠ X monitor module not found")
-        return None
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize X monitor: {e}")
-        return None
-
+# X/Twitter monitoring removed (2026-07 launch cleanup).
 # Subscription manager removed - handled by C# Engine directly
 
 async def test_connections(config: Dict[str, Any]) -> None:
     """Test all external service connections"""
     logger.info("🔍 Testing external service connections...")
     
-    # Test Redis connection
+    # Test Redis connection.
+    # INIT-003 / LAUNCH-FIX 5: SafeRedisClient.ping() returns False instead of
+    # raising, so the old code logged "successful" even when Redis was down —
+    # while other subsystems (analysis_cache) correctly reported it missing.
+    # Check the RETURN VALUE.
     try:
         from utils.redis_conn import redis_client
-        redis_client.ping()
-        logger.info("✅ Redis connection successful")
+        if redis_client.ping():
+            logger.info("✅ Redis connection successful")
+        else:
+            logger.error("❌ Redis ping returned false — Redis is NOT available "
+                         "(caches and rate limits will degrade)")
     except ImportError:
         logger.warning("⚠ Redis module not found. Some features may be limited.")
     except Exception as e:
         logger.error(f"❌ Redis connection failed: {e}")
-    
-    # Test GPT connection
+
+    # Test GPT connection. LAUNCH-FIX 3: health_check surfaces the real
+    # HTTP status / error body; test_gpt_connection logs it.
     try:
-        if config["OPENROUTER_API_KEY"]:
+        if config["OPENROUTER_API_KEY"] or config["OPENAI_API_KEY"]:
             from gpt.engine import test_gpt_connection
             if await test_gpt_connection():
-                logger.info("✅ OpenRouter GPT connection test passed")
+                logger.info("✅ GPT connection test passed")
             else:
-                logger.error("❌ OpenRouter GPT connection test failed")
-        elif config["OPENAI_API_KEY"]:
-            logger.info("✅ Using OpenAI API as GPT provider")
+                logger.error("❌ GPT connection test failed — see 'GPT health "
+                             "check FAILED' line above for the exact cause")
         else:
             logger.error("❌ No GPT API key configured")
     except ImportError:
@@ -103,13 +92,6 @@ async def start_background_tasks(services: Dict[str, Any]) -> None:
         return
     _bg_tasks_started = True
 
-    X_monitor = services.get('X_monitor')
-
-    # Start X monitoring
-    if X_monitor:
-        logger.info("🐦 Starting X monitoring service...")
-        asyncio.create_task(X_monitor.enhanced_monitoring_cycle())
-
     # Start wallet monitoring (blockchain.py) when Redis is available
     try:
         from utils.redis_conn import redis_client
@@ -135,10 +117,7 @@ async def initialize_all_services(config: Dict[str, Any]) -> Dict[str, Any]:
     
     # Initialize GPT handler
     services['gpt_handler'] = await initialize_gpt_handler(config)
-    
-    # Initialize X monitor
-    services['X_monitor'] = await initialize_X_monitor(config)
-    
+
     # Subscription manager removed
     # services['subscription_manager'] = await initialize_subscription_manager(config)
     

@@ -50,6 +50,15 @@ class OpenAIClient:
         
         self.client = AsyncOpenAI(api_key=self.api_key, base_url=base_url)
         self.model = os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
+        # LAUNCH-FIX 3: OpenRouter model slugs are vendor-prefixed
+        # ("openai/gpt-3.5-turbo"); a bare OpenAI slug 404s on OpenRouter and
+        # the health check fails opaquely. Remap when needed.
+        if "openrouter" in base_url and "/" not in self.model:
+            remapped = os.getenv('OPENROUTER_MODEL', f"openai/{self.model}")
+            logger.warning(
+                "Model '%s' is not a valid OpenRouter slug (needs vendor prefix); using '%s'. "
+                "Set OPENROUTER_MODEL to override.", self.model, remapped)
+            self.model = remapped
         self.max_tokens = int(os.getenv('OPENAI_MAX_TOKENS', '1000'))
         self.temperature = float(os.getenv('OPENAI_TEMPERATURE', '0.7'))
         

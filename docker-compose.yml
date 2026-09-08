@@ -10,10 +10,13 @@ services:
     environment:
       - ConnectionStrings__DefaultConnection=Host=postgres;Database=TonGPT;Username=postgres;Password=password
       - ASPNETCORE_ENVIRONMENT=Development
-      - EngineApiKey=fc9ecbb6865f6b490e481407c0ff0e715b1212b7fbe28de4163daf04dda6dda4
+      # AUDIT-FIX: key comes from .env via compose interpolation — no secret
+      # literal committed in this file. Rotate the old hardcoded key.
+      - EngineApiKey=${ENGINE_API_KEY}
       - TonCenter__BaseUrl=https://testnet.toncenter.com/api/v2  # FIX-1
       - TonCenter__ContractAddress=0QBeYwn1b3YMHrcF07KwXx3GNbktcvAJ_8ByAlZKZMdHOO5H  # FIX-1
       - TonCenter__Network=testnet  # FIX-1
+      - TonCenter__ApiKey=${TONCENTER_API}  # LAUNCH-FIX 1: keyless = throttled
     depends_on:
       postgres:
         condition: service_healthy

@@ -84,10 +84,22 @@ def monitored_wallet() -> str:
 
 
 def tolerance() -> float:
+    """Underpayment tolerance, clamped to a safe band (PAY-009).
+
+    A misconfigured env (e.g. TON_PAYMENT_TOLERANCE=1.0) previously meant
+    "accept zero TON". Clamped to [0, 0.02]: at most a 2% shortfall is ever
+    accepted, and a negative value can't reject exact payments. Out-of-band
+    values are logged loudly so the misconfig is visible.
+    """
+    _MAX_TOL = 0.02
     try:
-        return float(os.getenv("TON_PAYMENT_TOLERANCE", "0.02"))
+        raw = float(os.getenv("TON_PAYMENT_TOLERANCE", "0.02"))
     except ValueError:
-        return 0.02
+        return _MAX_TOL
+    clamped = min(max(raw, 0.0), _MAX_TOL)
+    if raw != clamped:
+        log.error("ton_payment_tolerance_out_of_band", configured=raw, clamped_to=clamped)
+    return clamped
 
 
 def monitor_interval() -> int:
@@ -347,10 +359,44 @@ async def fetch_incoming_events(limit: int = 50, before_lt: Optional[int] = None
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(url, params=params, headers=headers)
             resp.raise_for_status()
+            _note_fetch_ok()
             return resp.json().get("events", []) or []
     except Exception as e:  # noqa: BLE001
         log.warning("ton_fetch_events_failed", err=str(e))
+        await _note_fetch_failure(e)
         return []
+
+
+# REL-001: a sustained TONAPI outage used to stall activations silently ([] on
+# every error, warning-level log only). Track consecutive failures and escalate
+# through error_reporter once past a threshold, then back off (re-alert every
+# N further failures) so ops hears about an outage without being spammed.
+_FETCH_FAIL_ALERT_AFTER = int(os.getenv("TON_FETCH_FAIL_ALERT_AFTER", "10"))
+_consecutive_fetch_failures = 0
+
+
+def _note_fetch_ok() -> None:
+    global _consecutive_fetch_failures
+    if _consecutive_fetch_failures >= _FETCH_FAIL_ALERT_AFTER:
+        log.info("ton_fetch_recovered", after_failures=_consecutive_fetch_failures)
+    _consecutive_fetch_failures = 0
+
+
+async def _note_fetch_failure(err: Exception) -> None:
+    global _consecutive_fetch_failures
+    _consecutive_fetch_failures += 1
+    n = _consecutive_fetch_failures
+    if n >= _FETCH_FAIL_ALERT_AFTER and n % _FETCH_FAIL_ALERT_AFTER == 0:
+        log.error("ton_fetch_outage", consecutive_failures=n, err=str(err))
+        try:
+            from services.error_reporter import error_reporter
+            await error_reporter.report(
+                Exception(f"TONAPI outage: {n} consecutive event-fetch failures "
+                          f"(payment monitor is blind): {err}"),
+                context="ton_payments.fetch_incoming_events",
+            )
+        except Exception as rep_err:  # noqa: BLE001
+            log.debug("ton_fetch_outage_report_failed", err=str(rep_err))
 
 
 # Best-effort high-water mark of the newest processed event lt. Lets each poll

@@ -1,6 +1,7 @@
 import json
 import asyncio
 import hashlib
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Callable, Union
 from functools import wraps
@@ -36,16 +37,46 @@ class CacheManager:
         self.redis_client = None
         self.memory_cache = {}  # Fallback in-memory cache
         self.cache_stats = {"hits": 0, "misses": 0, "errors": 0}
-        
+
+        # LAUNCH-FIX 5: the module-level singleton was built with NO redis_url,
+        # so this class never even attempted Redis and logged "Redis not
+        # available" while the rest of the app was happily connected. Read the
+        # same REDIS_URL every other subsystem uses, fall back to the shared
+        # utils.redis_conn connection, and log the REAL reason on failure —
+        # never a silent in-memory fallback when Redis is actually up.
+        redis_url = redis_url or os.getenv("REDIS_URL")
+
         if REDIS_AVAILABLE and redis_url:
             try:
-                self.redis_client = redis.from_url(redis_url, decode_responses=True)
+                self.redis_client = redis.from_url(
+                    redis_url, decode_responses=True,
+                    socket_connect_timeout=3, socket_timeout=3,
+                )
                 self.redis_client.ping()  # Test connection
-                logger.info("Redis cache initialized successfully")
+                logger.info(f"analysis_cache: Redis cache initialized ({redis_url})")
             except Exception as e:
-                logger.warning(f"Redis connection failed, using memory cache: {e}")
-        else:
-            logger.info("Using in-memory cache (Redis not available)")
+                self.redis_client = None
+                logger.error(
+                    f"analysis_cache: Redis connection to {redis_url} FAILED "
+                    f"({type(e).__name__}: {e}) — falling back to in-memory cache"
+                )
+
+        if self.redis_client is None:
+            # Second chance: borrow the shared, already-working connection.
+            try:
+                from utils.redis_conn import safe_redis_client
+                raw = getattr(safe_redis_client, "client", None)
+                if raw is not None and raw.ping():
+                    self.redis_client = raw
+                    logger.info("analysis_cache: reusing shared Redis connection (utils.redis_conn)")
+            except Exception as e:
+                logger.debug(f"analysis_cache: shared Redis unavailable: {e}")
+
+        if self.redis_client is None:
+            logger.warning(
+                "analysis_cache: no working Redis (REDIS_URL unset or unreachable) — "
+                "using non-persistent in-memory cache"
+            )
     
     def _generate_cache_key(self, prefix: str, *args, **kwargs) -> str:
         """Generate consistent cache keys"""
@@ -241,18 +272,9 @@ async def get_whale_activity_cached(contract_address: str) -> List[Dict]:
         logger.error(f"Whale activity fetch error: {e}")
         return []
 
-@cache_with_strategy(cache_type="sentiment", ttl=120)
-async def get_sentiment_data_cached(token_symbol: str) -> Dict[str, Any]:
-    """Cached sentiment analysis data"""
-    try:
-        # Your sentiment data fetching logic here
-        # This is a placeholder - replace with actual implementation
-        tweet_data = []  # fetch_tweet_data(token_symbol)
-        from . import process_sentiment_data
-        return process_sentiment_data(tweet_data)
-    except Exception as e:
-        logger.error(f"Sentiment data fetch error: {e}")
-        return process_sentiment_data([])
+# get_sentiment_data_cached removed (2026-07): it was an X/Twitter placeholder
+# that always processed an empty tweet list. services.analysis.process_sentiment_data
+# is kept (generic aggregation) but currently has no live feed.
 
 @cache_with_strategy(cache_type="wallet_info", ttl=600)
 async def get_wallet_info_cached(wallet_address: str) -> Dict[str, Any]:

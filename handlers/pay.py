@@ -585,29 +585,57 @@ async def get_referral_count(user_id: int) -> int:
     except:
         return 0
 
+# Engine plan names -> canonical pricing keys ("ProPlus" was previously missed
+# because .lower() gives "proplus", not "pro_plus" — paid Pro+ users were shown
+# the Free fallback).
+_ENGINE_PLAN_TO_KEY = {
+    "starter": "starter",
+    "pro": "pro",
+    "proplus": "pro_plus",
+    "pro_plus": "pro_plus",
+    "pro+": "pro_plus",
+    "elite": "elite",
+}
+
+
 async def get_plan_details(user_id: int) -> dict:
-    """Get detailed plan information"""
-    current_plan = await get_user_plan(user_id)
-    
-    if current_plan.lower() in PLANS:
-        plan = PLANS[current_plan.lower()]
-        
-        # Get expiration date
-        try:
-            ttl = redis_client.ttl(f"premium:{user_id}")
-            expires = f"{ttl // 86400} days" if ttl > 0 else "N/A"
-        except:
-            expires = "N/A"
-            
+    """Get detailed plan information.
+
+    PAY-014: expiry is sourced from the Engine's get_user_status (the actual
+    activation authority), NOT a Redis TTL the activation flow never set.
+    LIMIT-INCONSISTENCY-001: the Free daily limit shows the rate limiter's real
+    cap (RATE_LIMIT_FREE_PER_DAY) instead of a hardcoded '10'.
+    """
+    expires = "N/A"
+    plan_raw = "Free"
+    try:
+        status = await engine_client.get_user_status(str(user_id))
+        plan_raw = status.get("plan", "Free")
+        expiry = status.get("expiry")
+        if expiry:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(str(expiry).replace('Z', '+00:00'))
+            days_left = (dt - datetime.now(timezone.utc)).days
+            expires = f"{max(days_left, 0)} days ({dt.strftime('%Y-%m-%d')})"
+    except Exception as e:
+        logger.error(f"Error getting plan details from engine: {e}")
+
+    key = _ENGINE_PLAN_TO_KEY.get((plan_raw or "").strip().lower())
+    if key:
+        plan = PLANS[key]
         return {
             'daily_limit': plan['queries_per_day'] if plan['queries_per_day'] != -1 else "Unlimited",
             'whale_threshold': plan['whale_threshold'],
             'features': plan['features'],
             'expires': expires
         }
-    
+
+    try:
+        free_daily = int(os.getenv("RATE_LIMIT_FREE_PER_DAY", "25"))
+    except ValueError:
+        free_daily = 25
     return {
-        'daily_limit': '10',
+        'daily_limit': str(free_daily),
         'whale_threshold': '∞',
         'features': ['Basic token scanning', 'Limited AI responses', 'Community access'],
         'expires': 'N/A'

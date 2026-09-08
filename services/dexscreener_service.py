@@ -347,6 +347,19 @@ class DexScreenerService:
         return self.cfg.backoff_base * (2 ** attempt) + random.uniform(0, self.cfg.backoff_base)
 
     # ===================================================================== #
+    # Public: raw pair search (used by services/radar.py for new-pair
+    # discovery). Returns TON pairs only; [] on any error. Goes through the
+    # same breaker/backoff as everything else.
+    # ===================================================================== #
+    async def search_pairs(self, query: str) -> List[dict]:
+        payload, err = await self._get(
+            "dexscreener", f"{self.cfg.dex_base}/latest/dex/search?q={quote(query)}"
+        )
+        if err or payload is None:
+            return []
+        return self._ton_pairs(payload)
+
+    # ===================================================================== #
     # Pair helpers
     # ===================================================================== #
     def _ton_pairs(self, payload: Any) -> List[dict]:

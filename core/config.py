@@ -15,13 +15,8 @@ def load_config() -> Dict[str, Any]:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     TON_API_KEY = os.getenv("TON_API_KEY")
     
-    # X API credentials
-    X_API_KEY = os.getenv("X_API_KEY")
-    X_API_SECRET = os.getenv("X_API_SECRET")
-    X_ACCESS_TOKEN = os.getenv("X_ACCESS_TOKEN")
-    X_ACCESS_TOKEN_SECRET = os.getenv("X_ACCESS_TOKEN_SECRET")
-    X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN")
-    
+    # X/Twitter integration removed (2026-07 launch cleanup).
+
     # Redis configuration
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
     REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
@@ -55,11 +50,6 @@ def load_config() -> Dict[str, Any]:
         "OPENROUTER_API_KEY": OPENROUTER_API_KEY,
         "OPENAI_API_KEY": OPENAI_API_KEY,
         "TON_API_KEY": TON_API_KEY,
-        "X_API_KEY": X_API_KEY,
-        "X_API_SECRET": X_API_SECRET,
-        "X_ACCESS_TOKEN": X_ACCESS_TOKEN,
-        "X_ACCESS_TOKEN_SECRET": X_ACCESS_TOKEN_SECRET,
-        "X_BEARER_TOKEN": X_BEARER_TOKEN,
         "REDIS_HOST": REDIS_HOST,
         "REDIS_PORT": REDIS_PORT,
         "REDIS_PASSWORD": REDIS_PASSWORD,
@@ -92,7 +82,5 @@ def validate_config(config: Dict[str, Any]) -> bool:
         logger.warning("⚠ PAYMENT_TOKEN not found — Telegram Stars payments will be disabled")
     if not config["TON_API_KEY"]:
         logger.warning("⚠ TON_API_KEY not found — TON API rate limits may apply")
-    if not all([config["X_API_KEY"], config["X_API_SECRET"], config["X_BEARER_TOKEN"]]):
-        logger.warning("⚠ X API credentials incomplete — X features will be limited")
-    
+
     return True

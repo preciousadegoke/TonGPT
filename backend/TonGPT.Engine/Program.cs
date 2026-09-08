@@ -12,6 +12,11 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddHttpClient();
+// LAUNCH-FIX 1: bounded client for toncenter get-method calls. The default
+// HttpClient timeout is 100s — a slow/throttled toncenter stacked up
+// multi-second calls and pressured the thread pool (Kestrel heartbeat
+// warning in the 2026-07-03 boot log). 8s is generous for runGetMethod.
+builder.Services.AddHttpClient("toncenter", c => c.Timeout = TimeSpan.FromSeconds(8));
 builder.Services.AddHostedService<SubscriptionWorker>();
 builder.Services.AddHostedService<ChatRetentionJob>();
 
@@ -56,6 +61,23 @@ if (string.IsNullOrWhiteSpace(connectionString))
         "DefaultConnection is not configured. " +
         "Set it via environment variable: ConnectionStrings__DefaultConnection"
     );
+
+// AUDIT-FIX (deploy reality): apply EF migrations on boot. Without this, a
+// fresh Postgres (first Fly.io deploy, wiped volume) has no schema and every
+// query 500s until someone manually runs `dotnet ef database update`.
+// Disable with Database:MigrateOnStartup=false if migrations are a deploy step.
+if (app.Configuration.GetValue("Database:MigrateOnStartup", true))
+{
+    using var migrationScope = app.Services.CreateScope();
+    var db = migrationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+    var pending = db.Database.GetPendingMigrations().ToList();
+    if (pending.Count > 0)
+    {
+        app.Logger.LogInformation("Applying {Count} pending EF migration(s): {Names}",
+            pending.Count, string.Join(", ", pending));
+        db.Database.Migrate();
+    }
+}
 
 app.UseForwardedHeaders();
 

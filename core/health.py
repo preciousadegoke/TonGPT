@@ -7,14 +7,16 @@ from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
-async def health_check(bot=None, gpt_handler=None, X_monitor=None, subscription_manager=None) -> Dict[str, Any]:
-    """Perform comprehensive health check on all bot components"""
+async def health_check(bot=None, gpt_handler=None, subscription_manager=None) -> Dict[str, Any]:
+    """Perform comprehensive health check on all bot components.
+
+    (X/Twitter monitoring removed in the 2026-07 launch cleanup.)
+    """
     health_status = {
         "bot": False,
         "redis": False,
         "ton_api": False,
         "gpt": False,
-        "X": False,
         "miniapp_api": True,  # Always true since it's integrated
         "subscription": bool(subscription_manager),
         "enhanced_features": bool(gpt_handler),
@@ -79,15 +81,6 @@ async def health_check(bot=None, gpt_handler=None, X_monitor=None, subscription_
     except Exception as e:
         logger.error(f"GPT health check failed: {e}")
     
-    # Check X API
-    try:
-        if X_monitor:
-            client = X_monitor.client
-            me = client.get_me()
-            health_status["X"] = bool(me.data)
-    except Exception as e:
-        logger.error(f"X API health check failed: {e}")
-    
     # Check subscription system
     try:
         if subscription_manager:
@@ -106,9 +99,7 @@ def log_system_status(services: Dict[str, Any]) -> None:
         features_enabled.append("Subscription Management")
     if services.get('gpt_handler'):
         features_enabled.append("Enhanced AI Conversations")
-    if services.get('X_monitor'):
-        features_enabled.append("X Monitoring & Alerts")
-    
+
     features_enabled.extend([
         "Mini-App API",
         "Telegram Bot",

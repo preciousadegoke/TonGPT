@@ -192,6 +192,50 @@ handle_gpt_query = create_rate_limit_decorator("ai_queries")(_handle_gpt_query_i
 async def ask_command(message: types.Message):
     await handle_gpt_query(message)
 
+
+# ---------------------------------------------------------------------------
+# §MEM — user-facing memory controls. Registered BEFORE the catch-all so the
+# commands are matched. /memory shows what the bot remembers; /forget wipes it
+# (both raw history and the rolling summary) — a trust/privacy feature.
+# ---------------------------------------------------------------------------
+@router.message(Command("memory"))
+async def memory_command(message: types.Message):
+    """Show the rolling long-term memory the bot keeps for this user."""
+    try:
+        from gpt.engine import get_engine
+        summary = await get_engine().get_memory_summary(message.from_user.id)
+    except Exception as e:
+        logger.error("memory_command_failed", err=str(e))
+        summary = None
+    if summary:
+        await message.reply(
+            "🧠 <b>What I remember about our chats</b>\n\n"
+            f"{summary}\n\n"
+            "💡 Use /forget to erase this at any time.",
+            parse_mode="HTML",
+        )
+    else:
+        await message.reply(
+            "🧠 I don't have any long-term memory about you yet.\n"
+            "Chat with me a bit and I'll start remembering the useful parts — "
+            "tokens you follow, your preferences, open questions."
+        )
+
+
+@router.message(Command("forget"))
+async def forget_command(message: types.Message):
+    """Erase conversation history + long-term memory for this user."""
+    try:
+        from gpt.engine import get_engine
+        await get_engine().clear_memory(message.from_user.id)
+        await message.reply(
+            "🧹 Done — I've erased our conversation history and everything I "
+            "remembered about you. We're starting fresh."
+        )
+    except Exception as e:
+        logger.error("forget_command_failed", err=str(e))
+        await message.reply("⚠️ Couldn't clear memory right now. Please try again shortly.")
+
 # Register general message handler (for non-command messages)
 @router.message(F.text & ~F.text.startswith('/'))
 async def handle_general_message(message: types.Message):

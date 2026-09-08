@@ -83,10 +83,15 @@ class SafeRedisClient:
                 logger.error(f"Redis GET error: {e}")
         return None
     
-    def set(self, key: str, value, ex: int = None):
+    def set(self, key: str, value, ex: int = None, nx: bool = False):
+        """SET with optional expiry and NX (set-if-not-exists).
+
+        With nx=True the return value distinguishes 'won the race' (truthy)
+        from 'key already existed' (None) — used for atomic cooldowns/dedup.
+        """
         if self.client:
             try:
-                return self.client.set(key, value, ex=ex)
+                return self.client.set(key, value, ex=ex, nx=nx)
             except Exception as e:
                 logger.error(f"Redis SET error: {e}")
         return False
@@ -268,6 +273,21 @@ class SafeRedisClient:
                 logger.error(f"Redis LRANGE error: {e}")
         return []
     
+    def ltrim(self, key: str, start: int, end: int):
+        """Trim a list to the given range.
+
+        NOTE: this was previously MISSING while gpt/engine.py called it inside
+        a broad try/except — the swallowed AttributeError meant chat-history
+        lists were never trimmed AND (because the exception aborted the write
+        batch before expire()) never given a TTL, growing unbounded.
+        """
+        if self.client:
+            try:
+                return self.client.ltrim(key, start, end)
+            except Exception as e:
+                logger.error(f"Redis LTRIM error: {e}")
+        return False
+
     def lpop(self, key: str, count: int = 1):
         if self.client:
             try:
