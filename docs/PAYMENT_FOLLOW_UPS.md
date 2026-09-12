@@ -1,7 +1,8 @@
 # Payment follow-ups
 
-Status recorded 2026-09-09. Fix 1 covers recipient verification. Fix 2 covers
-checkpoint advancement and replay; the PostgreSQL restructuring is still pending.
+Status recorded 2026-09-12. Fix 1 covers recipient verification, Fix 2 checkpoint
+advancement/replay, and Fix 3 unconfirmed persistence failures. Fix 4's concurrent
+renewal change is implemented for review; PostgreSQL restructuring remains pending.
 
 - **Invalid wallet visibility.** `monitor_loop()` logs `ton_monitor_error` at
   error level when wallet validation raises, then retries after its interval.
@@ -19,18 +20,59 @@ checkpoint advancement and replay; the PostgreSQL restructuring is still pending
   API endpoint. Expect a history replay using unchanged `ton:event:action`
   Engine idempotency keys. No identifier or database migration runs in this fix.
   This fixes scanner retry/checkpoint behavior; end-to-end concurrency guarantees
-  still require Fixes 3 and 4 and the later transaction-identifier migration.
-- **Fix 2 / Fix 3 overlap checked (2026-09-12).** The Engine's faulty exception
-  response has `alreadyProcessed: true` with `paymentId: null` when the matching
+  also depend on Fix 4 (now implemented for review) and the later
+  transaction-identifier migration.
+- **Fix 2 / Fix 3 overlap checked (2026-09-12).** Before Fix 3, the Engine's faulty
+  exception response had `alreadyProcessed: true` with `paymentId: null` when the matching
   payment does not exist. The real Python client preserves that missing ID.
   The TON monitor logs `ton_payment_unconfirmed_ack`, refuses checkpoint advance,
   and retries from the chain. Regression cases overlap a replay and a new payment,
   with either request receiving the false acknowledgement, then verify recovery.
-  These simulate Engine responses through the real client; the actual EF/Postgres
-  concurrent-request regression remains part of Fix 3. The shared activation queue
-  still accepts `ok` without a payment ID and can drop its retry or notify falsely.
-  TON's chain scan remains the recovery path; Stars has no equivalent chain scan.
-  This protection does not resolve Fix 3 globally or Fix 4's renewal race.
+  These simulate Engine responses through the real client; Fix 3 now also tests
+  the actual EF/Postgres concurrent-request path. The shared queue still trusts
+  `ok` without checking the payment ID itself. Fix 3 removes this false success
+  from the shared endpoint; its HTTP 503 follows existing client/queue retry
+  handling for both TON and Stars. The TON scan's additional guard remains useful
+  while an older Engine is deployed. Fix 4 addresses the renewal race below.
+- **Fix 3: confirm a duplicate before acknowledging it.** After a failed save,
+  re-query by `(ExternalId, Provider)`. Return `AlreadyProcessed` only with the
+  matching persisted payment ID; otherwise log the failure and return retryable
+  HTTP 503. Real PostgreSQL regressions cover concurrent duplicate notifications,
+  different payments racing to create a user, and a general write failure. They
+  reproduced two failures before the change and pass 3/3 afterward, including
+  successful retry, no partial audit/payment writes, and idempotent replay.
+  `scripts/test_payment_controller.py` runs them in a disposable PostgreSQL 15
+  container; it does not use application data or run identifier migrations.
+- **503 retry audit (2026-09-12).** `_post()` converts HTTP 503 into an integer
+  error; `EngineClient.complete_payment()` retries three total attempts with
+  1-second and 2-second waits, then returns a non-permanent failure. Both
+  `handlers/pay.py::_activate_with_resilience` (Stars) and the TON monitor enqueue
+  transient failures. `main.py` starts the supervised activation reconciler;
+  its default drain interval is 60 seconds. TON also retains its checkpoint and
+  retries the unconfirmed chain range. New Python regressions exercise the real
+  client HTTP-status handling and queue drain for both providers through outage
+  and recovery, using a fake HTTP transport and temporary files.
+  Default queue thresholds alert every 10 failed drains and move an item to the
+  dead-letter file after 120. These entries require manual recovery. If Stars
+  queue insertion itself fails, the handler logs `ACTIVATION_LOST_RISK`; there is
+  no automatic recovery in that branch. Track this with the separate Stars queue
+  durability follow-up, not as part of the renewal or TON restructuring work.
+- **Fix 4: concurrent renewal durations accumulate.** The previous tracked-entity
+  calculation let two payments read one expiry and overwrite each other's time.
+  `ExecuteUpdateAsync` now computes `max(current database expiry, now) + duration`
+  under PostgreSQL's row lock. An explicit transaction contains payment/audit
+  persistence and this update; rollback completes before Fix 3 rechecks a
+  duplicate. Reload the tracked user before commit for the response expiry.
+  The disposable PostgreSQL suite passes 8/8: previous Fix 3 cases, concurrent
+  mixed TON/Stars renewals with future/expired/null expiry, duplicate renewal,
+  and rollback after the actual expiry update followed by idempotent retry.
+  All three distinct-payment renewal cases failed against the pre-fix controller.
+  No schema change or identifier migration is part of this fix.
+- **Engine authentication verified (2026-09-12).** The bot, Engine, and local
+  `.env` credentials match. A read-only status request returns HTTP 401 without
+  credentials and HTTP 200 with `X-Api-Key` or `Authorization: Bearer`. The running
+  bot's actual `EngineClient` also succeeds. `EngineApiKey` is a configuration
+  name, not an HTTP header. The earlier 401 probe omitted authentication.
 
 - **Live payment history: open, not a Fix 1 blocker.** The user will confirm
   whether live payments were processed elsewhere and provide access if needed.
@@ -58,7 +100,8 @@ checkpoint advancement and replay; the PostgreSQL restructuring is still pending
   both methods use the shared transactional activation endpoint. Audit all shared
   callers and test the idempotent identifier migration against a backup copy
   before any live migration. The backup migration test has not been performed.
-- **Regression plan.** Recipient rejection and failed persistence without
-  checkpoint advance/restart replay are covered in Fixes 1-2. Concurrent duplicate
-  notifications and concurrent renewal extensions remain required for Fixes 3-4.
+- **Regression plan.** Recipient rejection, failed persistence without checkpoint
+  advance/restart replay, and concurrent duplicate notifications are covered in
+  Fixes 1-3. Concurrent renewal extensions and transaction rollback are covered
+  by Fix 4's PostgreSQL regressions.
   Keep the 16-test Tact subscription baseline as a regression check.

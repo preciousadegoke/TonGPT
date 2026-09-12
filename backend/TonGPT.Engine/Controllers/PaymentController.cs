@@ -151,14 +151,6 @@ namespace TonGPT.Engine.Controllers
             };
             _context.Payments.Add(payment);
 
-            // Extend from the later of (now, current expiry) so we never throw
-            // away a user's remaining unexpired time on renewal.
-            var basis = (user.SubscriptionExpiry.HasValue && user.SubscriptionExpiry.Value > now)
-                ? user.SubscriptionExpiry.Value
-                : now;
-            user.Plan = plan;
-            user.SubscriptionExpiry = basis.AddDays(durationDays);
-
             _context.ActivityLogs.Add(new ActivityLog
             {
                 TelegramId = request.TelegramId,
@@ -176,14 +168,34 @@ namespace TonGPT.Engine.Controllers
 
             try
             {
-                // ONE transaction: payment + user upgrade + audit log all commit
-                // together, or none of them do.
+                // SaveChanges and ExecuteUpdate must share a transaction: no
+                // payment/audit may commit without its subscription extension.
+                // Dispose rolls back before the catch queries for a duplicate.
+                await using var transaction = await _context.Database.BeginTransactionAsync();
                 await _context.SaveChangesAsync();
+
+                // Compute from the current database value, not the earlier
+                // tracked read. PostgreSQL serializes updates to this user so
+                // concurrent distinct payments each add their full duration.
+                var updated = await _context.Users
+                    .Where(u => u.TelegramId == request.TelegramId)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(u => u.Plan, plan)
+                        .SetProperty(u => u.SubscriptionExpiry, u =>
+                            (u.SubscriptionExpiry.HasValue && u.SubscriptionExpiry.Value > now
+                                ? u.SubscriptionExpiry.Value : now).AddDays(durationDays)));
+                if (updated != 1)
+                    throw new DbUpdateException("Payment activation requires exactly one user update.");
+
+                // ExecuteUpdate bypasses tracked entities. Read the result while
+                // this transaction still holds the user lock for the response.
+                await _context.Entry(user).ReloadAsync();
+                await transaction.CommitAsync();
             }
-            catch (DbUpdateException)
+            catch (DbUpdateException ex)
             {
-                // A concurrent duplicate slipped past the pre-check and tripped
-                // the unique index. NOTHING was committed -> no double activation.
+                // A failed save may be a payment duplicate, a concurrent user
+                // creation, or another write failure. Confirm the payment first.
                 foreach (var entry in _context.ChangeTracker.Entries().ToList())
                     entry.State = Microsoft.EntityFrameworkCore.EntityState.Detached;
 
@@ -191,6 +203,19 @@ namespace TonGPT.Engine.Controllers
                     ? await _context.Payments.FirstOrDefaultAsync(
                         p => p.ExternalId == request.ExternalId && p.Provider == request.Provider)
                     : null;
+                if (existing == null)
+                {
+                    _logger.LogWarning(ex,
+                        "Payment/complete write failed without a confirmed payment for ExternalId {ExternalId}, Provider {Provider}; retry required.",
+                        request.ExternalId, request.Provider);
+                    return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+                    {
+                        status = "RetryableFailure",
+                        retryable = true,
+                        message = "Payment was not confirmed. Retry with the same ExternalId and Provider."
+                    });
+                }
+
                 var u1 = await _context.Users.FirstOrDefaultAsync(x => x.TelegramId == request.TelegramId);
                 _logger.LogInformation(
                     "Payment/complete concurrent duplicate resolved for ExternalId {ExternalId}.",
@@ -199,7 +224,7 @@ namespace TonGPT.Engine.Controllers
                 {
                     status = "AlreadyProcessed",
                     alreadyProcessed = true,
-                    paymentId = existing?.Id,
+                    paymentId = existing.Id,
                     plan = (u1?.Plan ?? SubscriptionPlan.Free).ToString(),
                     expiry = u1?.SubscriptionExpiry
                 });
