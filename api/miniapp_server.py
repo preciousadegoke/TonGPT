@@ -12,10 +12,11 @@ import json as _json
 import time as _time
 from urllib.parse import parse_qsl
 import base64
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
@@ -24,6 +25,7 @@ from services.analysis import analyze_token_ai, analyze_wallet_ai, calculate_ris
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+MINIAPP_DIST = Path(__file__).resolve().parents[1] / "miniapp-v2" / "dist"
 
 # RL-001: in-process per-IP limiter used as a FAIL-CLOSED fallback when Redis is
 # unavailable, so the mini-app API is never left completely unthrottled (the old
@@ -204,19 +206,12 @@ def create_miniapp_server() -> FastAPI:
 
     app.add_middleware(IPRateLimitMiddleware)
 
-    # Mount static files for the mini-app.
-    # The v2 app (Preact/Vite) builds to a `dist/` folder, so prefer that. We try,
-    # in order: miniapp/dist (promoted v2), miniapp-v2/dist (v2 not yet renamed),
-    # then a bare miniapp/ (legacy raw-static fallback). `html=True` serves
-    # index.html for client-side routes.
-    import os as _os
-    _candidates = ["miniapp/dist", "miniapp-v2/dist", "miniapp"]
-    _served = next((d for d in _candidates if _os.path.isdir(d)), None)
-    if _served:
-        app.mount("/miniapp", StaticFiles(directory=_served, html=True), name="miniapp")
-        logger.info(f"Mini-App static files served from: {_served}")
+    # Preserve the public /miniapp URL while serving only the compiled v2 app.
+    if (MINIAPP_DIST / "index.html").is_file():
+        app.mount("/miniapp", StaticFiles(directory=MINIAPP_DIST, html=True), name="miniapp")
+        logger.info(f"Mini-App static files served from: {MINIAPP_DIST}")
     else:
-        logger.warning("No mini-app build found (looked for miniapp/dist, miniapp-v2/dist, miniapp) — static serving disabled")
+        logger.warning("No mini-app build found in miniapp-v2/dist; run npm run build there")
 
     return app
 
@@ -274,19 +269,11 @@ async def _get_memecoin_data() -> list:
 
 @miniapp.get("/")
 async def serve_miniapp():
-    """Serve the mini-app HTML with injected TONGPT_API_URL"""
-    try:
-        with open("miniapp/index.html", "r", encoding="utf-8") as f:
-            html = f.read()
-            
-        api_url = os.environ.get("API_BASE_URL", "https://tongpt.loca.lt/api")
-        injected_script = f'<script>window.TONGPT_API_URL = {_json.dumps(api_url)};</script></head>'
-        html = html.replace('</head>', injected_script)
-        
-        return HTMLResponse(content=html)
-    except Exception as e:
-        logger.error(f"Error serving mini-app HTML: {e}")
-        return FileResponse("miniapp/index.html")
+    """Serve the compiled app; Vite embeds its VITE_API_BASE_URL at build time."""
+    index = MINIAPP_DIST / "index.html"
+    if not index.is_file():
+        raise HTTPException(status_code=503, detail="Mini-app build unavailable")
+    return FileResponse(index)
 
 @miniapp.get("/api/scan")
 async def get_trending_coins():
@@ -881,3 +868,9 @@ async def get_trending_alias():
 async def get_social_alias():
     """Alias for /api/X/sentiment — X/Twitter integration removed (2026-07)."""
     return {"sentiment": "neutral", "posts": [], "summary": "Social sentiment feature removed"}
+
+
+# Vite's built HTML references /assets and service-worker files at the root.
+# Register this last so static files cannot shadow the API routes above.
+if (MINIAPP_DIST / "index.html").is_file():
+    miniapp.mount("/", StaticFiles(directory=MINIAPP_DIST, html=True), name="miniapp_build")

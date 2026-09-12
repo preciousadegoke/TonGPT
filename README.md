@@ -88,8 +88,13 @@ Requires a running **Redis** (`REDIS_HOST/PORT/PASSWORD`) and the **C# Engine**
 cd miniapp-v2
 npm install
 npm run dev      # http://localhost:5173, proxies /api → :8000
-npm run build    # → miniapp-v2/dist (served by FastAPI in prod)
+npm run build    # → miniapp-v2/dist (served by FastAPI and the Nginx container)
 ```
+
+Build before starting the web container: from the repository root, run
+`docker compose up -d --no-deps tongpt-web-ui`. Compose mounts `miniapp-v2/dist`
+read-only; mounting the source directory would serve uncompiled TypeScript.
+The public `/miniapp/` URL is retained for compatibility.
 
 See `miniapp-v2/README.md`, `MIGRATION.md`, and `LAUNCH.md` for the full
 Mini-App guide and launch checklist.

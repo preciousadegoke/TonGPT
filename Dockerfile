@@ -59,7 +59,7 @@ COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Create necessary directories
-RUN mkdir -p logs miniapp static && \
+RUN mkdir -p logs miniapp-v2 static && \
     chown -R tongpt:tongpt /app
 
 # Copy application code

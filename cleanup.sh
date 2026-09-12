@@ -50,10 +50,9 @@ fi
 
 # ── Stage 2: untracked local clutter (not in git; just delete on disk) ──────
 stage "2. Delete untracked runtime/junk files on disk"
-if ask "Delete bot.log, notifications.db, the temp .tar, and the empty miniapp/ dir?"; then
+if ask "Delete bot.log, notifications.db, and the temp .tar?"; then
   run "rm -f bot.log notifications.db"
   run "rm -f .tmp-tongpt-bot-image.tar623475655"
-  run "rmdir miniapp 2>/dev/null || true"   # only removes it if empty (it is)
 fi
 
 # ── Stage 3: consolidate status / verification docs ────────────────────────
@@ -68,16 +67,10 @@ if ask "Move REMEDIATION_REGISTER.md + PRE_LAUNCH_SMOKE_TEST.md into docs/?"; th
   run "git add docs/PRE_LAUNCH_SMOKE_TEST.md 2>/dev/null || true"
 fi
 
-# ── Stage 4 (CAREFUL but now LOW-RISK): Mini-App promotion ──────────────────
-stage "4. Promote miniapp-v2 -> miniapp"
-echo "  api/miniapp_server.py ALREADY prefers 'miniapp/dist' then 'miniapp-v2/dist'"
-echo "  (candidate fallback list), so this rename no longer breaks static serving."
-echo "  Prerequisite: a fresh build exists -> cd miniapp-v2 && npm install && npm run build"
-if ask "Rename miniapp-v2/ -> miniapp/ NOW (empty legacy miniapp/ already gone)?"; then
-  run "rmdir miniapp 2>/dev/null || true"
-  run "git mv miniapp-v2 miniapp"
-  echo "  ✔ No code change needed; server picks up miniapp/dist automatically."
-fi
+# ── Stage 4: retain the canonical Mini-App directory ───────────────────────
+stage "4. Mini-App build location"
+echo "  Keep miniapp-v2/ in place; Docker and FastAPI serve miniapp-v2/dist."
+echo "  Build with: cd miniapp-v2 && npm ci && npm run build"
 
 # ── Stage 5 (OPTIONAL): tidy root scripts ──────────────────────────────────
 stage "5. [OPTIONAL] Move root verify_*.py / test_*.py off the root"

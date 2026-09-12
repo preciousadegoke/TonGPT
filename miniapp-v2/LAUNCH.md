@@ -1,6 +1,7 @@
 # TonGPT Mini-App v2 — Launch Guide & Final Checklist
 
-Everything needed to take `miniapp-v2/` live and retire the legacy `miniapp/`.
+Everything needed to take `miniapp-v2/` live. Docker/Nginx and FastAPI serve
+`miniapp-v2/dist`; build it before starting the web container.
 
 ---
 
@@ -119,4 +120,4 @@ set the Mini-App URL in **@BotFather → Bot Settings → Menu Button / Web App*
 **Cutover**
 - [ ] Point bot Mini-App URL at the new `dist/`
 - [ ] Smoke test end-to-end with a real account
-- [ ] Archive/remove legacy `miniapp/` once verified
+- [ ] Verify Docker/Nginx and FastAPI serve `miniapp-v2/dist` and its assets

@@ -1,7 +1,7 @@
 # Migration: Vanilla `miniapp/` → `miniapp-v2/`
 
-The new app is **additive** — it lives in `miniapp-v2/` and doesn't touch the old
-`miniapp/`. Cut over only when you're happy.
+The app now lives in `miniapp-v2/`. Docker/Nginx and FastAPI serve its compiled
+`dist/` directory. The legacy source folder is retired; no rename is required.
 
 ## What maps to what
 
@@ -86,4 +86,4 @@ the manifest `url`/`iconUrl` to your real domain before launch.
 - [ ] Confirm TON prices in `config/index.ts`
 - [ ] `npm run build`, serve `dist/`, set Mini-App URL in @BotFather
 - [ ] Run the test checklist (TESTING.md)
-- [ ] Retire `miniapp/` once verified
+- [ ] Verify the root page and `/miniapp/` serve the built app and its assets

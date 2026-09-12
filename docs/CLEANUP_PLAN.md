@@ -45,7 +45,7 @@ tongpt/
 │   ├── (subscription/)        #   optional: fold tongpt-subscription/ here
 │   └── (wrappers/)            #   optional: fold wrappers/ here
 │
-├── miniapp/                   # ← the Preact v2 app (renamed from miniapp-v2/)
+├── miniapp-v2/                # canonical Preact/Vite source directory
 │   └── dist/                  #   build output served by FastAPI
 │
 ├── scripts/                   # ops + the verify_*.py / check_*.py moved off root
@@ -82,7 +82,6 @@ low risk.
 | `bot.log` | `rm` — already covered by `*.log`. |
 | `notifications.db` | `rm` — already covered by `*.db`; app recreates it. |
 | `.tmp-tongpt-bot-image.tar623475655` | `rm` — 0-byte Docker leftover. |
-| empty `miniapp/` dir | `rmdir` — legacy app already deleted; only the husk remains. |
 
 > `.gitignore` already ignores `*.db`, `*.log`, `*.tar`, `.tmp-*`, `build/`,
 > `node_modules/`, `myenv/`. `services/ton_ecosystem.db` and `_perm_test` are
@@ -111,26 +110,19 @@ Safe to delete locally at any time.
 
 ---
 
-## 3. Mini-App finalization (now LOW risk)
+## 3. Mini-App build and serving
 
-`miniapp-v2/` is the real app; the legacy `miniapp/` is already an empty husk.
-**The earlier "breaking change" is resolved:** `api/miniapp_server.py` now resolves
-the static dir from a candidate list —
-
-```python
-_candidates = ["miniapp/dist", "miniapp-v2/dist", "miniapp"]
-```
-
-so promoting v2 needs **no code edit**. Steps:
+Keep the source directory named `miniapp-v2/`. FastAPI and Docker/Nginx both
+serve `miniapp-v2/dist`; no folder promotion or rename is needed.
 
 ```bash
-cd miniapp-v2 && npm install && npm run build   # ensure dist/ is fresh
+cd miniapp-v2 && npm ci && npm run build
 cd ..
-rmdir miniapp 2>/dev/null            # remove the empty husk
-git mv miniapp-v2 miniapp            # promote
+docker compose up -d --no-deps tongpt-web-ui
 ```
 
-The server picks up `miniapp/dist` automatically on next boot.
+Confirm `dist/index.html` and its referenced assets exist before starting the
+web container. The public `/miniapp/` URL is retained for compatibility.
 
 ---
 
@@ -145,8 +137,8 @@ The server picks up `miniapp/dist` automatically on next boot.
 
 ## 5. Breaking changes & how they're handled
 
-1. **Mini-App serving path** — *already de-risked* by the candidate fallback list
-   (§3). No action needed beyond a fresh `npm run build`.
+1. **Mini-App serving path** — always `miniapp-v2/dist` (§3). Build before
+   starting the web container; the uncompiled source directory is not a web root.
 2. **Tracked DB removal** — after `git rm --cached`, boot the bot/api once and
    confirm it recreates `notifications.db` / `services/ton_ecosystem.db` cleanly
    before relying on it.
@@ -173,8 +165,8 @@ git status                                    # only intended changes show
 #   start the bot/api once -> confirm it recreates the DBs and boots clean
 git ls-files | grep -E '\.(db|log)$' || echo "no DB/log tracked ✓"
 
-# After Mini-App promotion:
-cd miniapp && npm install && npm run build && ls dist   # build succeeds
+# After Mini-App build:
+cd miniapp-v2 && npm ci && npm run build && ls dist   # build succeeds
 #   hit /miniapp on the running server -> app loads
 
 # Final sanity:

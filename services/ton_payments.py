@@ -15,7 +15,7 @@ transfer it:
     2. validates the amount against the canonical price for that plan
     3. activates the subscription via the ATOMIC, idempotent Engine endpoint
        (engine_client.complete_payment), using the on-chain event id as the
-       idempotency key — so a transfer can NEVER double-activate or be lost.
+       idempotency key, preserving deduplication when a scan is replayed.
 
 WHY THIS IS SAFE
 ----------------
@@ -24,8 +24,9 @@ WHY THIS IS SAFE
   monitor can still fully process a payment from the on-chain comment alone.
 * complete_payment is idempotent (Postgres unique index on external_id), so the
   monitor can reprocess the same transfer any number of times harmlessly.
-* If the Engine is briefly down, the activation is hadned to the durable
-  activation queue (services/activation_queue.py) and retried until it lands.
+* If the Engine is briefly down, the activation is handed to the shared
+  activation queue (services/activation_queue.py). The chain checkpoint stays
+  behind that payment until the Engine confirms a persisted payment record.
 * Underpayments are rejected; overpayments still activate (user paid enough).
 
 This module is deliberately free of aiogram imports so its logic is unit
@@ -35,12 +36,15 @@ testable. The Telegram UX lives in handlers/ton_payment_handler.py.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import secrets
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 import structlog
+from tonsdk.utils import Address, InvalidAddressError
 
 from core.pricing import (
     PLANS,
@@ -253,6 +257,11 @@ async def activate_from_payment(
     )
 
     if res.get("ok"):
+        # An acknowledgement without a persisted payment is not commit proof.
+        # In particular, the Engine can currently return AlreadyProcessed/null.
+        if not res.get("payment_id"):
+            log.error("ton_payment_unconfirmed_ack", external_id=external_id)
+            return "failed"
         if res.get("already_processed"):
             return "already"
         await _notify_user(user_id, plan_key)
@@ -339,8 +348,8 @@ async def fetch_incoming_events(limit: int = 50, before_lt: Optional[int] = None
     """Fetch a page of events for the monitored wallet (newest first).
 
     ``before_lt`` pages backwards: TONAPI returns events with lt < before_lt, so
-    passing the oldest lt of the previous page yields the next older page. Returns
-    [] on any error.
+    passing the oldest lt of the previous page yields the next older page.
+    Errors raise: a failed request must never be mistaken for end of history.
     """
     import httpx
 
@@ -359,12 +368,16 @@ async def fetch_incoming_events(limit: int = 50, before_lt: Optional[int] = None
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(url, params=params, headers=headers)
             resp.raise_for_status()
+            payload = resp.json()
+            events = payload.get("events") if isinstance(payload, dict) else None
+            if not isinstance(events, list) or any(not isinstance(ev, dict) for ev in events):
+                raise ValueError("Invalid TONAPI events response")
             _note_fetch_ok()
-            return resp.json().get("events", []) or []
+            return events
     except Exception as e:  # noqa: BLE001
         log.warning("ton_fetch_events_failed", err=str(e))
         await _note_fetch_failure(e)
-        return []
+        raise
 
 
 # REL-001: a sustained TONAPI outage used to stall activations silently ([] on
@@ -399,28 +412,37 @@ async def _note_fetch_failure(err: Exception) -> None:
             log.debug("ton_fetch_outage_report_failed", err=str(rep_err))
 
 
-# Best-effort high-water mark of the newest processed event lt. Lets each poll
-# stop as soon as it reaches already-seen territory. If Redis is unavailable we
-# simply fall back to bounded pagination (and Engine idempotency dedups anyway).
-def _get_high_water_lt() -> Optional[int]:
+# This is a replay optimization, written only after the WHOLE range is confirmed.
+# Do not trust the old global key: it could cover failed/queued payments and did
+# not identify its wallet/network. A new namespace deliberately replays history
+# through the unchanged Engine idempotency keys; no payment IDs are migrated here.
+def _checkpoint_key() -> str:
+    source = "\n".join((Address(monitored_wallet()).to_string(False), network(), tonapi_base()))
+    return "ton_monitor_confirmed_lt:v2:" + hashlib.sha256(source.encode()).hexdigest()
+
+
+def _get_high_water_lt(key: Optional[str] = None) -> Optional[int]:
+    key = key or _checkpoint_key()
     r = _redis()
     if not r:
         return None
     try:
-        v = r.get("ton_monitor_high_lt")
-        return int(v) if v else None
+        v = r.get(key)
+        return int(v) if v and int(v) > 0 else None
     except Exception:
         return None
 
 
-def _set_high_water_lt(lt: int) -> None:
+def _set_high_water_lt(lt: int, key: Optional[str] = None) -> bool:
+    key = key or _checkpoint_key()
     r = _redis()
-    if not r:
-        return
     try:
-        r.set("ton_monitor_high_lt", str(int(lt)))
-    except Exception:
-        pass
+        if r and r.set(key, str(int(lt))):
+            return True
+        log.error("ton_checkpoint_write_failed", lt=lt, err="Redis did not acknowledge the write")
+    except Exception as e:
+        log.error("ton_checkpoint_write_failed", lt=lt, err=str(e))
+    return False
 
 
 def _event_lt(ev: Dict[str, Any]) -> Optional[int]:
@@ -437,7 +459,12 @@ def extract_transfers(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     Defensive about response shape — TONAPI nests the transfer under either
     'TonTransfer' or 'tonTransfer'. Unknown shapes are skipped (and logged by
     the caller), never crash the monitor.
+
+    Invalid monitored-wallet configuration raises before processing any event.
     """
+    # Compare the workchain AND account hash, independently of display flags.
+    # Let invalid configuration stop the poll rather than silently skip payments.
+    expected_recipient = Address(monitored_wallet()).to_string(False)
     out: List[Dict[str, Any]] = []
     for ev in events:
         event_id = ev.get("event_id") or ev.get("eventId")
@@ -453,6 +480,17 @@ def extract_transfers(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             if status not in ("ok", ""):
                 continue
             tt = action.get("TonTransfer") or action.get("tonTransfer") or {}
+            if not isinstance(tt, dict):
+                continue
+            recipient = tt.get("recipient")
+            if not isinstance(recipient, dict) or not isinstance(recipient.get("address"), str):
+                continue
+            try:
+                actual_recipient = Address(recipient["address"]).to_string(False)
+            except (InvalidAddressError, ValueError):
+                continue
+            if actual_recipient != expected_recipient:
+                continue
             comment = tt.get("comment")
             amount = tt.get("amount")
             if comment is None or amount is None:
@@ -461,26 +499,22 @@ def extract_transfers(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-async def _process_one_event(ev: Dict[str, Any]) -> int:
-    """Process every TonTransfer in a single event. Returns NEW activations."""
+async def _process_one_event(ev: Dict[str, Any]) -> tuple[int, bool]:
+    """Return (new activations, all matching payments confirmed by the Engine)."""
     activated = 0
     for tr in extract_transfers([ev]):
-        event_id = tr["event_id"]
-        if not event_id:
-            continue
-        # Per-transfer idempotency key (PAY-004): event_id + action index.
-        external_id = f"ton:{event_id}:{tr['idx']}"
-        if _already_processed(external_id):
-            continue
-
         parsed = parse_memo(tr["comment"])
         if not parsed:
             continue  # not one of our payments
-
+        event_id = tr["event_id"]
+        if not event_id:
+            raise ValueError("TON payment event has no idempotency identifier")
+        # Per-transfer idempotency key (PAY-004): event_id + action index.
+        external_id = f"ton:{event_id}:{tr['idx']}"
         try:
             amount_nanoton = int(tr["amount"])
-        except (TypeError, ValueError):
-            continue
+        except (TypeError, ValueError) as e:
+            raise ValueError("TON payment has an invalid amount") from e
 
         if not validate_amount(amount_nanoton, parsed["plan_key"]):
             log.warning(
@@ -490,69 +524,106 @@ async def _process_one_event(ev: Dict[str, Any]) -> int:
                 external_id=external_id,
             )
             # PAY-010: tell the user so an underpayment isn't silently swallowed.
-            await _notify_underpaid(parsed["user_id"], parsed["plan_key"], amount_nanoton)
-            _mark_processed(external_id)  # don't re-evaluate; user must re-pay
+            if not _already_processed(external_id):
+                await _notify_underpaid(parsed["user_id"], parsed["plan_key"], amount_nanoton)
+                _mark_processed(external_id)  # notification suppression only
             continue
 
         status = await activate_from_payment(
             parsed["user_id"], parsed["plan_key"], external_id, amount_nanoton
         )
-        if status in ("activated", "already", "queued"):
-            _mark_processed(external_id)  # queue owns it now if "queued"
+        # Legacy ton_done markers include queued payments. Always ask the Engine
+        # about paid transfers; neither the cache nor the shared queue proves a
+        # payment was committed (the queue's torn-tail issue is a separate fix).
+        if status not in ("activated", "already"):
+            log.warning("ton_checkpoint_blocked", external_id=external_id, status=status)
+            return activated, False
         if status == "activated":
             activated += 1
-    return activated
+    return activated, True
+
+
+@dataclass
+class _ScanProgress:
+    key: str
+    high_water: Optional[int]
+    newest_lt: Optional[int] = None
+    before_lt: Optional[int] = None
+
+
+# A page budget yields work to the next poll, without claiming completion.
+# Losing this cursor on restart is safe: the last committed checkpoint remains
+# behind the gap, and the Engine deduplicates replayed activations.
+_scan_progress: Optional[_ScanProgress] = None
+_scan_lock = asyncio.Lock()
 
 
 async def process_events_once() -> int:
-    """Single monitoring pass with bounded back-pagination so a burst of more
-    than one page of transfers is never missed (PAY-007).
+    """Process a bounded chunk; checkpoint only a completely confirmed range."""
+    async with _scan_lock:
+        return await _process_events_once()
 
-    Pages backwards from newest until it reaches the previous high-water lt
-    (already-seen territory), the end of history, or a safety cap of pages.
-    Returns the number of NEW activations.
-    """
+
+async def _process_events_once() -> int:
+    global _scan_progress
     if not is_configured():
         return 0
 
     page_limit = 50
-    max_pages = int(os.getenv("TON_MONITOR_MAX_PAGES", "10"))  # cap = 10*50 = 500/poll
-    high_water = _get_high_water_lt()
+    max_pages = max(1, int(os.getenv("TON_MONITOR_MAX_PAGES", "10")))
+    key = _checkpoint_key()  # validate the configured wallet even on empty polls
+    high_water = _get_high_water_lt(key)
+    if (_scan_progress is None or _scan_progress.key != key
+            or _scan_progress.high_water != high_water):
+        _scan_progress = _ScanProgress(key, high_water)
+    scan = _scan_progress
 
     activated = 0
-    newest_lt: Optional[int] = None
-    before_lt: Optional[int] = None
-    reached_known = False
+    complete = False
 
     for _page in range(max_pages):
-        events = await fetch_incoming_events(limit=page_limit, before_lt=before_lt)
+        events = await fetch_incoming_events(limit=page_limit, before_lt=scan.before_lt)
         if not events:
+            complete = True
             break
+
+        # Validate the whole page before activation or cursor movement. An
+        # invalid/non-descending LT cannot safely define the remaining range.
+        previous_lt = scan.before_lt
+        for ev in events:
+            lt = _event_lt(ev)
+            if lt is None or lt <= 0 or (previous_lt is not None and lt >= previous_lt):
+                raise ValueError("Invalid or non-descending TONAPI event cursor")
+            previous_lt = lt
+        if scan.newest_lt is None:
+            scan.newest_lt = _event_lt(events[0])
 
         for ev in events:
             ev_lt = _event_lt(ev)
-            if newest_lt is None and ev_lt is not None:
-                newest_lt = ev_lt
-            # Stop once we reach events we've already covered on a prior poll.
-            if high_water is not None and ev_lt is not None and ev_lt <= high_water:
-                reached_known = True
+            if high_water is not None and ev_lt <= high_water:
+                complete = True
                 break
-            activated += await _process_one_event(ev)
+            if ev.get("in_progress"):
+                log.warning("ton_checkpoint_blocked", lt=ev_lt, status="in_progress")
+                return activated
+            count, confirmed = await _process_one_event(ev)
+            activated += count
+            if not confirmed:
+                return activated  # retry this page; never skip the failed event
 
-        if reached_known:
+        if complete:
             break
+        scan.before_lt = previous_lt
+        # Only an explicit empty page (or the old checkpoint) establishes the
+        # end. A short page alone does not prove that pagination is complete.
 
-        last_lt = _event_lt(events[-1])
-        # Can't advance the cursor safely, or we've hit the end of history.
-        if last_lt is None or (before_lt is not None and last_lt >= before_lt):
-            break
-        before_lt = last_lt
-        if len(events) < page_limit:
-            break
-
-    if newest_lt is not None:
-        _set_high_water_lt(newest_lt)
-
+    if complete:
+        if scan.newest_lt is not None and (high_water is None or scan.newest_lt > high_water):
+            _set_high_water_lt(scan.newest_lt, key)
+        # If Redis failed, the next scan replays from the last saved checkpoint.
+        _scan_progress = None
+    else:
+        log.info("ton_scan_yielded", before_lt=scan.before_lt, checkpoint=high_water)
     return activated
 
 

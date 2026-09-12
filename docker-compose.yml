@@ -55,7 +55,7 @@ services:
     ports:
       - "3000:80"
     volumes:
-      - ./miniapp:/usr/share/nginx/html/miniapp
+      - ./miniapp-v2/dist:/usr/share/nginx/html/miniapp-v2:ro
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
     depends_on:
       - tongpt-bot
