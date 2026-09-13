@@ -2,7 +2,7 @@
 
 Status recorded 2026-09-12. Fix 1 covers recipient verification, Fix 2 checkpoint
 advancement/replay, and Fix 3 unconfirmed persistence failures. Fix 4's concurrent
-renewal change is implemented for review; PostgreSQL restructuring remains pending.
+renewal change is approved; PostgreSQL restructuring remains pending.
 
 - **Invalid wallet visibility.** `monitor_loop()` logs `ton_monitor_error` at
   error level when wallet validation raises, then retries after its interval.
@@ -20,7 +20,7 @@ renewal change is implemented for review; PostgreSQL restructuring remains pendi
   API endpoint. Expect a history replay using unchanged `ton:event:action`
   Engine idempotency keys. No identifier or database migration runs in this fix.
   This fixes scanner retry/checkpoint behavior; end-to-end concurrency guarantees
-  also depend on Fix 4 (now implemented for review) and the later
+  also depend on Fix 4 (now approved) and the later
   transaction-identifier migration.
 - **Fix 2 / Fix 3 overlap checked (2026-09-12).** Before Fix 3, the Engine's faulty
   exception response had `alreadyProcessed: true` with `paymentId: null` when the matching
@@ -59,10 +59,23 @@ renewal change is implemented for review; PostgreSQL restructuring remains pendi
   durability follow-up, not as part of the renewal or TON restructuring work.
 - **Fix 4: concurrent renewal durations accumulate.** The previous tracked-entity
   calculation let two payments read one expiry and overwrite each other's time.
-  `ExecuteUpdateAsync` now computes `max(current database expiry, now) + duration`
-  under PostgreSQL's row lock. An explicit transaction contains payment/audit
-  persistence and this update; rollback completes before Fix 3 rechecks a
-  duplicate. Reload the tracked user before commit for the response expiry.
+  **Mechanism: a single atomic SQL UPDATE**, issued by `ExecuteUpdateAsync`, sets
+  both plan and expiry. PostgreSQL evaluates a CASE expression using the stored
+  `SubscriptionExpiry`: use that value if it is non-null and later than `now`,
+  otherwise use `now`, then add the requested duration as an interval. Here `now`
+  is the request's captured `DateTime.UtcNow` parameter, not a database clock call.
+  The expiry calculation executes inside that one UPDATE; it is not computed
+  from a preceding SELECT in application memory, and there is no SELECT FOR UPDATE.
+  At the default PostgreSQL READ COMMITTED isolation level, concurrent UPDATEs
+  of the same user serialize on the row lock. A waiting UPDATE uses the row
+  version committed by the preceding updater, so each distinct payment adds its
+  duration to the latest expiry instead of overwriting it with a stale value.
+  The earlier user lookup only finds or creates the user. The later ReloadAsync
+  reads the already-updated values for the response; it does not calculate expiry.
+  An explicit transaction contains payment/audit persistence and this UPDATE,
+  making all of them commit or roll back together. The payment unique index
+  rejects concurrent duplicates before they can extend expiry; rollback completes
+  before Fix 3 rechecks the persisted payment for its duplicate response.
   The disposable PostgreSQL suite passes 8/8: previous Fix 3 cases, concurrent
   mixed TON/Stars renewals with future/expired/null expiry, duplicate renewal,
   and rollback after the actual expiry update followed by idempotent retry.

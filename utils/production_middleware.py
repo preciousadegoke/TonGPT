@@ -24,6 +24,11 @@ class RateLimitMiddleware(BaseMiddleware):
         # Only apply to messages
         if not isinstance(event, Message):
             return await handler(event, data)
+
+        # Money has already moved: reach activation/queueing regardless of quota.
+        # Bypass the tier lookup too so it cannot delay payment processing.
+        if event.successful_payment is not None:
+            return await handler(event, data)
         
         user_id = event.from_user.id
         

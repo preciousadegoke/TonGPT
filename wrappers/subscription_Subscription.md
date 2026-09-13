@@ -1,6 +1,6 @@
 # Tact compilation report
 Contract: Subscription
-BoC Size: 736 bytes
+BoC Size: 767 bytes
 
 ## Structures (Structs and Messages)
 Total structures: 16

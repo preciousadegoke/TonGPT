@@ -468,19 +468,23 @@ builder $Subscription$_store(builder build_0, (slice, cell) v) inline {
 ((slice, cell), int) $Subscription$_fun_price((slice, cell) $self, int $tier) impure inline_ref {
     var (($self'owner, $self'subscriptions)) = $self;
     if (($tier == 1)) {
-        var $fresh$ret_3 = 1000000000;
+        var $fresh$ret_3 = 10000000000;
         return (($self'owner, $self'subscriptions), $fresh$ret_3);
     }
     if (($tier == 2)) {
-        var $fresh$ret_4 = 5000000000;
+        var $fresh$ret_4 = 30000000000;
         return (($self'owner, $self'subscriptions), $fresh$ret_4);
     }
     if (($tier == 3)) {
-        var $fresh$ret_5 = 20000000000;
+        var $fresh$ret_5 = 60000000000;
         return (($self'owner, $self'subscriptions), $fresh$ret_5);
     }
-    var $fresh$ret_6 = 0;
-    return (($self'owner, $self'subscriptions), $fresh$ret_6);
+    if (($tier == 4)) {
+        var $fresh$ret_6 = 120000000000;
+        return (($self'owner, $self'subscriptions), $fresh$ret_6);
+    }
+    var $fresh$ret_7 = 0;
+    return (($self'owner, $self'subscriptions), $fresh$ret_7);
 }
 
 ;;
@@ -560,11 +564,13 @@ _ %price(int $tier) method_id(120091) {
         var ($ctx'bounceable, $ctx'sender, $ctx'value, $ctx'raw) = __tact_context_get();
         slice $sender = $ctx'sender;
         int $tier = 0;
-        if (($ctx'value >= 20000000000)) {
+        if (($ctx'value >= 120000000000)) {
+            $tier = 4;
+        } elseif (($ctx'value >= 60000000000)) {
             $tier = 3;
-        } elseif (($ctx'value >= 5000000000)) {
+        } elseif (($ctx'value >= 30000000000)) {
             $tier = 2;
-        } elseif (($ctx'value >= 1000000000)) {
+        } elseif (($ctx'value >= 10000000000)) {
             $tier = 1;
         } else {
             throw(101);

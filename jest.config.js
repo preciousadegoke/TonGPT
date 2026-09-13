@@ -1,6 +1,7 @@
 module.exports = {
     preset: "ts-jest",
     testEnvironment: "node",
+    globalSetup: "<rootDir>/tests/compile-subscription.cjs",
     // SubscriptionTolk.spec.ts is excluded: it targets a PLANNED contract
     // interface (sendWithdraw / exit codes 102-103) that does not exist in
     // tongpt-subscription/contracts/subscription.tolk (ops: Subscribe,

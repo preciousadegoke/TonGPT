@@ -8,11 +8,17 @@ __pycache__/
 *.pyo
 *.pyd
 .env
+.env.*
+# Runtime volume contents must not seed an image or hide the notification link.
+data/
+notifications/
+notifications.db*
 myenv/
 venv/
 
 # Node (if any)
 node_modules/
+miniapp-v2/dist/
 
 # .NET
 bin/

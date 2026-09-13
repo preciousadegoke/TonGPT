@@ -23,6 +23,11 @@ services:
       - ENGINE_URL=http://tongpt-engine:5090/api
       # Bot configuration
       - BOT_TOKEN=${BOT_TOKEN}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN}
+      - ENGINE_API_KEY=${ENGINE_API_KEY:?Set ENGINE_API_KEY}
+      - REFERRAL_SECRET=${REFERRAL_SECRET:?Set REFERRAL_SECRET}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS}
+      - PAYMENT_WALLET_ADDRESS=${PAYMENT_WALLET_ADDRESS:?Set PAYMENT_WALLET_ADDRESS}
       - PAYMENT_TOKEN=${PAYMENT_TOKEN}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - TON_API_KEY=${TON_API_KEY}
@@ -34,7 +39,8 @@ services:
 
       # Database connection
       - DATABASE_URL=postgresql://tongpt:${POSTGRES_PASSWORD}@postgres:5432/tongpt
-      - REDIS_URL=redis://redis:6379
+      # Use a URL-safe password (e.g. random hex) for this shared credential.
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?Set a URL-safe REDIS_PASSWORD}@redis:6379/0
 
       # Security
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
@@ -56,6 +62,8 @@ services:
     volumes:
       - tongpt-logs:/app/logs
       - tongpt-static:/app/static
+      - tongpt-data:/app/data
+      - tongpt-notifications:/app/notifications
     networks:
       - tongpt-network
     healthcheck:
@@ -84,6 +92,8 @@ services:
     environment:
       - ConnectionStrings__DefaultConnection=Host=postgres;Database=tongpt;Username=tongpt;Password=${POSTGRES_PASSWORD}
       - ASPNETCORE_ENVIRONMENT=Production
+      - EngineApiKey=${ENGINE_API_KEY:?Set ENGINE_API_KEY}
+      - AllowedHosts=${ENGINE_ALLOWED_HOSTS:-tongpt-engine;localhost;127.0.0.1}
     networks:
       - tongpt-network
     logging:
@@ -104,7 +114,7 @@ services:
       - POSTGRES_INITDB_ARGS="--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      # No init-db.sql exists; the Engine applies its EF schema migrations.
     ports:
       - "5432:5432"
     networks:
@@ -125,8 +135,9 @@ services:
     image: redis:7-alpine
     container_name: tongpt-redis
     restart: unless-stopped
-    command: >
-      redis-server --appendonly yes --appendfsync everysec --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru", "--requirepass", "${REDIS_PASSWORD:?Set a URL-safe REDIS_PASSWORD}"]
+    environment:
+      - REDISCLI_AUTH=${REDIS_PASSWORD:?Set a URL-safe REDIS_PASSWORD}
     volumes:
       - redis-data:/data
     ports:
@@ -134,7 +145,7 @@ services:
     networks:
       - tongpt-network
     healthcheck:
-      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
+      test: [ "CMD-SHELL", "redis-cli --raw ping | grep -qx PONG" ]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -145,18 +156,32 @@ services:
         max-file: "2"
 
   # Nginx reverse proxy
+  # TODO: provision nginx/nginx.conf and nginx/ssl with real TLS certificates
+  # before enabling --profile edge. The existing default.conf is dev-only.
   nginx:
     image: nginx:alpine
     container_name: tongpt-nginx
     restart: unless-stopped
+    profiles:
+      - edge
     depends_on:
       - tongpt-bot
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - type: bind
+        source: ./nginx/nginx.conf
+        target: /etc/nginx/nginx.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./nginx/ssl
+        target: /etc/nginx/ssl
+        read_only: true
+        bind:
+          create_host_path: false
       - tongpt-static:/var/www/static:ro
     networks:
       - tongpt-network
@@ -172,6 +197,8 @@ services:
         max-file: "3"
 
   # Prometheus monitoring
+  # TODO: monitoring/ configs below are not shipped. Provision them before
+  # enabling --profile monitoring; these are optional deployment templates.
   prometheus:
     image: prom/prometheus:latest
     container_name: tongpt-prometheus
@@ -229,6 +256,10 @@ services:
 
 # Volumes for persistent data
 volumes:
+  tongpt-data:
+    driver: local
+  tongpt-notifications:
+    driver: local
   postgres-data:
     driver: local
   redis-data:

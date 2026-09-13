@@ -1,4 +1,11 @@
 # Multi-stage Dockerfile for TonGPT production deployment
+FROM node:22-alpine AS frontend
+WORKDIR /frontend
+COPY miniapp-v2/package.json miniapp-v2/package-lock.json ./
+RUN npm ci
+COPY miniapp-v2/ ./
+RUN npm run build
+
 FROM python:3.11-slim AS builder
 
 # Set build arguments
@@ -59,17 +66,21 @@ COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Create necessary directories
-RUN mkdir -p logs miniapp-v2 static && \
+RUN mkdir -p logs miniapp-v2 static data notifications && \
     chown -R tongpt:tongpt /app
 
 # Copy application code
 COPY --chown=tongpt:tongpt . .
+COPY --from=frontend --chown=tongpt:tongpt /frontend/dist/ /app/miniapp-v2/dist/
+
+# Preserve the application's hardcoded filename while storing SQLite in a volume.
+RUN ln -s /app/notifications/notifications.db /app/notifications.db
 
 # Switch to non-root user
 USER tongpt
 
 # Create volume mount points
-VOLUME ["/app/logs", "/app/static"]
+VOLUME ["/app/logs", "/app/static", "/app/data", "/app/notifications"]
 
 # Expose ports
 EXPOSE 8000 8001

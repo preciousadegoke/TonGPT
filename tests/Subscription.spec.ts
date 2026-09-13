@@ -1,18 +1,19 @@
 import { Blockchain, SandboxContract, TreasuryContract } from '@ton/sandbox';
-import { toNano, fromNano } from '@ton/core';
+import { toNano } from '@ton/core';
 import { Subscription } from '../wrappers/subscription_Subscription';
 import '@ton/test-utils';
 
 // Top-level constants (moved out of contract body)
-const TIER_STARTER = 1000000000n;
-const TIER_PRO = 5000000000n;
-const TIER_WHALE = 20000000000n;
+const TIER_STARTER = 10000000000n;
+const TIER_PRO = 30000000000n;
+const TIER_PRO_PLUS = 60000000000n;
+const TIER_ELITE = 120000000000n;
 const DURATION = 2592000n;
 
 // ----------------------------------------------------------------------------------------------------
 // TonGPT — Subscription Contract Test Suite
-// Tests all 5 patched fixes before Mainnet deployment
-// Run: npx blueprint test
+// Jest globalSetup recompiles current source before loading the wrapper.
+// Run: npm test -- --runInBand
 // ----------------------------------------------------------------------------------------------------
 
 describe('Subscription', () => {
@@ -47,15 +48,15 @@ describe('Subscription', () => {
     });
 
     // ------------------------------------------------------------------------------------------------
-    // GROUP 1: Valid Payments — all three tiers
+    // GROUP 1: Valid Payments — all four tiers
     // ------------------------------------------------------------------------------------------------
 
     describe('Valid payments', () => {
 
-        it('Starter tier: 1 TON activates subscription', async () => {
+        it('Starter tier: 10 TON activates subscription', async () => {
             const result = await contract.send(
                 user.getSender(),
-                { value: toNano('1'), bounce: true },
+                { value: TIER_STARTER, bounce: true },
                 null
             );
 
@@ -76,10 +77,10 @@ describe('Subscription', () => {
             expect(active).toBe(true);
         });
 
-        it('Pro tier: 5 TON activates subscription', async () => {
+        it('Pro tier: 30 TON activates subscription', async () => {
             const result = await contract.send(
                 user.getSender(),
-                { value: toNano('5'), bounce: true },
+                { value: TIER_PRO, bounce: true },
                 null
             );
 
@@ -97,10 +98,10 @@ describe('Subscription', () => {
             expect(active).toBe(true);
         });
 
-        it('Whale tier: 20 TON activates subscription', async () => {
+        it('Pro Plus tier: 60 TON activates subscription', async () => {
             const result = await contract.send(
                 user.getSender(),
-                { value: toNano('20'), bounce: true },
+                { value: TIER_PRO_PLUS, bounce: true },
                 null
             );
 
@@ -118,11 +119,29 @@ describe('Subscription', () => {
             expect(active).toBe(true);
         });
 
-        it('Overpayment above Whale tier is still accepted as Whale', async () => {
-            // Range check logic: anything >= 20 TON = Whale tier
+        it('Elite tier: 120 TON activates subscription', async () => {
             const result = await contract.send(
                 user.getSender(),
-                { value: toNano('25'), bounce: true },
+                { value: TIER_ELITE, bounce: true },
+                null
+            );
+            expect(result.transactions).toHaveTransaction({
+                from: user.address,
+                to: contract.address,
+                success: true,
+            });
+            const sub = await contract.getGetSubscription(user.address);
+            expect(sub).not.toBeNull();
+            expect(sub!.tier).toBe(4n);
+            expect(sub!.expiresAt).toBeGreaterThan(0n);
+            expect(await contract.getIsActive(user.address)).toBe(true);
+        });
+
+        it('Overpayment above Elite tier is still accepted as Elite', async () => {
+            // Range check logic: anything >= 120 TON = Elite tier
+            const result = await contract.send(
+                user.getSender(),
+                { value: toNano('125'), bounce: true },
                 null
             );
 
@@ -133,7 +152,7 @@ describe('Subscription', () => {
             });
 
             const sub = await contract.getGetSubscription(user.address);
-            expect(sub!.tier).toBe(3n);
+            expect(sub!.tier).toBe(4n);
         });
     });
 
@@ -209,7 +228,7 @@ describe('Subscription', () => {
             // First subscription
             await contract.send(
                 user.getSender(),
-                { value: toNano('1'), bounce: true },
+                { value: TIER_STARTER, bounce: true },
                 null
             );
 
@@ -219,7 +238,7 @@ describe('Subscription', () => {
             // Renew immediately
             await contract.send(
                 user.getSender(),
-                { value: toNano('1'), bounce: true },
+                { value: TIER_STARTER, bounce: true },
                 null
             );
 
@@ -236,7 +255,7 @@ describe('Subscription', () => {
             // Start on Starter
             await contract.send(
                 user.getSender(),
-                { value: toNano('1'), bounce: true },
+                { value: TIER_STARTER, bounce: true },
                 null
             );
 
@@ -246,7 +265,7 @@ describe('Subscription', () => {
             // Upgrade to Pro
             await contract.send(
                 user.getSender(),
-                { value: toNano('5'), bounce: true },
+                { value: TIER_PRO, bounce: true },
                 null
             );
 
@@ -265,7 +284,7 @@ describe('Subscription', () => {
             // Fund contract with a valid payment first
             await contract.send(
                 user.getSender(),
-                { value: toNano('5'), bounce: true },
+                { value: TIER_PRO, bounce: true },
                 null
             );
 
@@ -293,7 +312,7 @@ describe('Subscription', () => {
             // Fund contract
             await contract.send(
                 user.getSender(),
-                { value: toNano('5'), bounce: true },
+                { value: TIER_PRO, bounce: true },
                 null
             );
 
@@ -339,7 +358,8 @@ describe('Subscription', () => {
         it('price() returns correct values for all tiers', async () => {
             expect(await contract.getPrice(1n)).toBe(TIER_STARTER);
             expect(await contract.getPrice(2n)).toBe(TIER_PRO);
-            expect(await contract.getPrice(3n)).toBe(TIER_WHALE);
+            expect(await contract.getPrice(3n)).toBe(TIER_PRO_PLUS);
+            expect(await contract.getPrice(4n)).toBe(TIER_ELITE);
             expect(await contract.getPrice(0n)).toBe(0n);
             expect(await contract.getPrice(99n)).toBe(0n);
         });
@@ -347,7 +367,7 @@ describe('Subscription', () => {
         it('expiresAt is stored as bigint (uint64) — no truncation', async () => {
             await contract.send(
                 user.getSender(),
-                { value: toNano('1'), bounce: true },
+                { value: TIER_STARTER, bounce: true },
                 null
             );
 

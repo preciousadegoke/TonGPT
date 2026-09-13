@@ -1,4 +1,4 @@
-// automatically generated from `@stdlib/std/stdlib.fc` `C:/Users/hp/OneDrive/Desktop/TONGPT/wrappers/subscription_Subscription.fc` 
+// automatically generated from `@stdlib/std/stdlib.fc` `C:/Users/hp/Downloads/TONGPT/wrappers/subscription_Subscription.fc` 
 PROGRAM{
   DECLPROC __tact_context_get
   DECLPROC __tact_context_get_sender
@@ -211,17 +211,23 @@ PROGRAM{
     1 EQINT
     IFJMP:<{
       DROP
-      1000000000 PUSHINT
+      10000000000 PUSHINT
     }>
     DUP
     2 EQINT
     IFJMP:<{
       DROP
-      5000000000 PUSHINT
+      30000000000 PUSHINT
     }>
+    DUP
     3 EQINT
     IFJMP:<{
-      20000000000 PUSHINT
+      DROP
+      60000000000 PUSHINT
+    }>
+    4 EQINT
+    IFJMP:<{
+      120000000000 PUSHINT
     }>
     0 PUSHINT
   }>
@@ -438,30 +444,39 @@ PROGRAM{
       s2 POP
       0 PUSHINT
       s2 PUSH
-      20000000000 PUSHINT
+      120000000000 PUSHINT
       GEQ
       IF:<{
         DROP
         NIP
-        3 PUSHINT
+        4 PUSHINT
       }>ELSE<{
         s2 PUSH
-        5000000000 PUSHINT
+        60000000000 PUSHINT
         GEQ
         IF:<{
           DROP
           NIP
-          2 PUSHINT
+          3 PUSHINT
         }>ELSE<{
-          s0 s2 XCHG
-          1000000000 PUSHINT
+          s2 PUSH
+          30000000000 PUSHINT
           GEQ
           IF:<{
+            DROP
             NIP
-            1 PUSHINT
+            2 PUSHINT
           }>ELSE<{
-            101 THROW
-            SWAP
+            s0 s2 XCHG
+            10000000000 PUSHINT
+            GEQ
+            IF:<{
+              NIP
+              1 PUSHINT
+            }>ELSE<{
+              101 THROW
+              SWAP
+            }>
           }>
         }>
       }>
