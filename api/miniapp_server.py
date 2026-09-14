@@ -871,6 +871,9 @@ async def get_social_alias():
 
 
 # Vite's built HTML references /assets and service-worker files at the root.
+from api.checkout_routes import install_checkout_routes
+install_checkout_routes(miniapp, verify_telegram_init_data)
+
 # Register this last so static files cannot shadow the API routes above.
 if (MINIAPP_DIST / "index.html").is_file():
     miniapp.mount("/", StaticFiles(directory=MINIAPP_DIST, html=True), name="miniapp_build")

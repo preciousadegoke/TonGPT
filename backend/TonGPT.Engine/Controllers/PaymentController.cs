@@ -39,6 +39,8 @@ namespace TonGPT.Engine.Controllers
             public int DurationDays { get; set; } = 30;
             public decimal AmountTon { get; set; } = 0m;    // paid TON (for ton* providers)
             public long AmountStars { get; set; } = 0;      // paid Stars (for telegram_stars)
+            [System.ComponentModel.DataAnnotations.MaxLength(128)]
+            public string? CheckoutReference { get; set; }
         }
 
         [HttpPost("complete")]
@@ -147,6 +149,7 @@ namespace TonGPT.Engine.Controllers
                 Plan = request.Plan,
                 Provider = request.Provider,
                 ExternalId = request.ExternalId,
+                CheckoutReference = request.CheckoutReference,
                 CreatedAt = now
             };
             _context.Payments.Add(payment);

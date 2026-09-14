@@ -13,6 +13,7 @@ services:
       # AUDIT-FIX: key comes from .env via compose interpolation — no secret
       # literal committed in this file. Rotate the old hardcoded key.
       - EngineApiKey=${ENGINE_API_KEY}
+      - WalletLinkSigningSecret=${WALLET_LINK_SIGNING_SECRET:?Set WALLET_LINK_SIGNING_SECRET for user-scoped checkout}
       - TonCenter__BaseUrl=https://testnet.toncenter.com/api/v2  # FIX-1
       - TonCenter__ContractAddress=0QBeYwn1b3YMHrcF07KwXx3GNbktcvAJ_8ByAlZKZMdHOO5H  # FIX-1
       - TonCenter__Network=testnet  # FIX-1

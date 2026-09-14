@@ -28,5 +28,9 @@ namespace TonGPT.Engine.Models
 
         /// <summary>External id from provider (e.g. Telegram payment charge id).</summary>
         public string? ExternalId { get; set; }
+
+        /// <summary>Optional UI correlation; never replaces provider idempotency.</summary>
+        [MaxLength(128)]
+        public string? CheckoutReference { get; set; }
     }
 }

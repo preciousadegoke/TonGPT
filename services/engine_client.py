@@ -235,6 +235,7 @@ class EngineClient:
         amount_ton: float = 0.0,
         amount_stars: int = 0,
         max_attempts: int = 3,
+        checkout_reference: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Atomically record a payment AND activate the subscription (Postgres SoT).
 
@@ -264,6 +265,7 @@ class EngineClient:
             "durationDays": int(duration_days),
             "amountTon": float(amount_ton),
             "amountStars": int(amount_stars),
+            **({'checkoutReference': checkout_reference} if checkout_reference else {}),
         }
         last_error: Any = None
         for attempt in range(1, max_attempts + 1):

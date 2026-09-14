@@ -5,6 +5,7 @@
   "type": "module",
   "description": "TonGPT Telegram Mini-App — Preact + Vite + TypeScript",
   "scripts": {
+    "test": "vitest run --config vitest.config.ts",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
@@ -14,7 +15,9 @@
   },
   "dependencies": {
     "@preact/signals": "^1.3.0",
+    "@ton/core": "^0.63.1",
     "@tonconnect/ui": "^2.0.9",
+    "buffer": "^6.0.3",
     "preact": "^10.24.0",
     "preact-iso": "^2.9.0"
   },
@@ -27,6 +30,7 @@
     "terser": "^5.34.0",
     "typescript": "^5.6.2",
     "vite": "^5.4.8",
-    "vite-plugin-pwa": "^0.20.5"
+    "vite-plugin-pwa": "^0.20.5",
+    "vitest": "^2.1.9"
   }
 }

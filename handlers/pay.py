@@ -95,6 +95,7 @@ async def _activate_with_resilience(
     *, user_id: int, engine_plan: str, provider: str,
     charge_id: str, duration_days: int, plan_key: str,
     amount_stars: int = 0, amount_ton: float = 0.0,
+    checkout_reference: str | None = None,
 ) -> dict:
     """Activate a subscription with Postgres as the single source of truth.
 
@@ -121,6 +122,7 @@ async def _activate_with_resilience(
             duration_days=duration_days,
             amount_ton=amount_ton,
             amount_stars=amount_stars,
+            **({'checkout_reference': checkout_reference} if checkout_reference else {}),
         )
     except Exception as e:
         logger.error(f"complete_payment raised for user {user_id}: {e}")
@@ -155,6 +157,7 @@ async def _activate_with_resilience(
             # Carry the amount so the queue drain re-validates correctly (PAY-001).
             "amount_stars": amount_stars,
             "amount_ton": amount_ton,
+            **({'checkout_reference': checkout_reference} if checkout_reference else {}),
         })
         result["queued"] = True
     except Exception as e:
@@ -274,7 +277,12 @@ async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
     payload = pre_checkout_query.invoice_payload
     
     # Strip premium_ prefix if present, but validate ALL payloads
-    plan_key = payload.split("premium_")[-1] if payload.startswith("premium_") else payload
+    from services.checkout import parse_invoice
+    try:
+        plan_key, _ = parse_invoice(payload, pre_checkout_query.from_user.id)
+    except ValueError:
+        await pre_checkout_query.answer(ok=False, error_message="This invoice belongs to another user. Open checkout in your own account.")
+        return
     if plan_key in PLANS:
         await pre_checkout_query.answer(ok=True)
         return
@@ -292,9 +300,10 @@ async def successful_payment_handler(message: Message):
     
     # Strip premium_ prefix if present, but validate ALL payloads
     raw_payload = payment.invoice_payload
-    raw_plan_key = raw_payload.split("premium_")[-1] if raw_payload.startswith("premium_") else raw_payload
+    from services.checkout import parse_invoice
     
     try:
+        raw_plan_key, checkout_reference = parse_invoice(raw_payload, user_id)
         validated_plan = await validate_payment_amount(
             raw_plan_key, payment.total_amount, payment.currency
         )
@@ -353,6 +362,7 @@ async def successful_payment_handler(message: Message):
         user_id=user_id, engine_plan=engine_plan, provider="telegram_stars",
         charge_id=charge_id, duration_days=duration_days, plan_key=plan_key,
         amount_stars=stars_received,
+        checkout_reference=checkout_reference,
     )
 
     # Best-effort revenue metrics — must NEVER gate or fail the activation.

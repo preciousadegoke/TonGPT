@@ -239,7 +239,8 @@ def _mark_processed(external_id: str) -> None:
 # Activation (reuses the atomic, idempotent Engine endpoint + durable queue)
 # --------------------------------------------------------------------------- #
 async def activate_from_payment(
-    user_id: int, plan_key: str, external_id: str, amount_nanoton: int
+    user_id: int, plan_key: str, external_id: str, amount_nanoton: int,
+    checkout_reference: Optional[str] = None,
 ) -> str:
     """Activate via Postgres (atomic/idempotent). Returns a status string:
 
@@ -254,6 +255,7 @@ async def activate_from_payment(
         external_id=external_id,
         duration_days=duration_days(plan_key),
         amount_ton=amount_nanoton / 1e9,
+        **({'checkout_reference': checkout_reference} if checkout_reference else {}),
     )
 
     if res.get("ok"):
@@ -288,6 +290,7 @@ async def activate_from_payment(
             "plan_key": plan_key,
             # Carry the paid amount so the queue drain passes the Engine's amount
             "amount_ton": amount_nanoton / 1e9,  # validation (PAY-001).
+            **({'checkout_reference': checkout_reference} if checkout_reference else {}),
         })
         log.warning("ton_payment_queued", user_id=user_id, plan=plan_key, external_id=external_id)
         return "queued"
@@ -530,7 +533,8 @@ async def _process_one_event(ev: Dict[str, Any]) -> tuple[int, bool]:
             continue
 
         status = await activate_from_payment(
-            parsed["user_id"], parsed["plan_key"], external_id, amount_nanoton
+            parsed["user_id"], parsed["plan_key"], external_id, amount_nanoton,
+            checkout_reference=tr['comment'].strip(),
         )
         # Legacy ton_done markers include queued payments. Always ask the Engine
         # about paid transfers; neither the cache nor the shared queue proves a

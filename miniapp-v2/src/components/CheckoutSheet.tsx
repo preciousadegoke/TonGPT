@@ -1,198 +1,114 @@
-import { useState, useEffect } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { Sheet } from '@/components/ui/Sheet';
-import { Segmented } from '@/components/ui/Segmented';
 import { Icon } from '@/components/ui/Icon';
-import { type Plan } from '@/config';
-import { TRUST_BADGES } from '@/config/marketing';
-import { payWithTon, payWithStars, type CheckoutResult } from '@/lib/payments';
-import { isWalletConnected, wallet, toast } from '@/store';
+import { PLANS, env, type Plan } from '@/config';
+import { api } from '@/lib/api';
+import { checkoutAttempt, checkoutMachine, isPending, type Rail } from '@/lib/payments';
 import { connectWallet } from '@/lib/tonconnect';
-import { fmtStars, shortAddr } from '@/lib/format';
-import { haptic } from '@/lib/telegram';
+import { isWalletConnected, user } from '@/store';
+import { fmtStars } from '@/lib/format';
 
-type Rail = 'ton' | 'stars';
-type Phase = 'idle' | 'processing' | 'paid' | 'pending' | 'error';
+interface Props { plan: Plan | null; onClose: () => void }
 
-interface Props {
-  plan: Plan | null;
-  onClose: () => void;
-}
-
-/**
- * Dual-rail checkout. The whole flow is intentionally optimistic:
- *  - We move to "processing" the instant the user commits.
- *  - On a confirmed payment we show a celebratory "paid" state, fire success
- *    haptics, then close.
- *  - On a settling on-chain tx we show "pending" (activating shortly) rather
- *    than blocking — the backend finishes activation out of band.
- *  - On failure we surface a SPECIFIC recovery action, not a dead end.
- */
 export function CheckoutSheet({ plan, onClose }: Props) {
-  const [rail, setRail] = useState<Rail>('ton');
-  const [phase, setPhase] = useState<Phase>('idle');
-  const [errMsg, setErrMsg] = useState('');
+  const [rail, setRail] = useState<Rail>('stars');
+  const [tonEnabled, setTonEnabled] = useState(false);
+  const [configMessage, setConfigMessage] = useState('Checking TON availability…');
+  const [localError, setLocalError] = useState('');
+  const generation = useRef(0);
+  const attempt = checkoutAttempt.value;
+  const busy = isPending(attempt);
 
-  // Reset whenever a new plan is opened.
   useEffect(() => {
-    if (plan) {
-      setPhase('idle');
-      setErrMsg('');
-      // Default Stars for users with no wallet — fewer steps to convert.
-      setRail(isWalletConnected.value ? 'ton' : 'stars');
+    const id = ++generation.current;
+    if (!plan) {
+      if (!isPending(checkoutMachine.state)) checkoutMachine.dismiss();
+      return;
     }
+    setTonEnabled(false);
+    setConfigMessage('Checking TON availability…');
+    setLocalError('');
+    api.get<{ enabled: boolean; network?: string; error?: string }>('/checkout/config')
+      .then((config) => {
+        if (generation.current !== id) return;
+        const enabled = config.enabled && config.network === env.network;
+        setTonEnabled(enabled);
+        setConfigMessage(enabled ? `TON payments use ${config.network}.`
+          : config.error || (config.enabled ? 'Network configuration differs; TON payment is disabled.' : 'TON payment is disabled by the backend.'));
+        if (!enabled) setRail('stars');
+      }).catch(() => {
+        if (generation.current === id) setConfigMessage('Could not check TON availability. Retry by reopening checkout.');
+      });
+    if (isPending(checkoutMachine.state)) void checkoutMachine.check();
+    return () => { generation.current++; };
   }, [plan?.id]);
 
   if (!plan) return null;
-
-  const settle = (result: CheckoutResult) => {
-    switch (result.status) {
-      case 'paid':
-        setPhase('paid');
-        toast(`${plan.name} activated 🎉`, 'success');
-        setTimeout(onClose, 1700);
-        break;
-      case 'pending':
-        setPhase('pending');
-        toast('Payment received — activating shortly', 'info');
-        break;
-      case 'cancelled':
-        setPhase('idle'); // user backed out; no scary error
-        break;
-      case 'failed':
-        setPhase('error');
-        setErrMsg(result.error || 'Something went wrong');
-        break;
-    }
+  const shownAttempt = attempt && (busy || attempt.plan === plan.id) ? attempt : null;
+  const shownPlan = busy ? PLANS.find((p) => p.id === attempt!.plan) || plan : plan;
+  const close = () => {
+    generation.current++;
+    if (!isPending(checkoutMachine.state)) checkoutMachine.dismiss();
+    onClose();
   };
-
   const pay = async () => {
-    haptic.impact('medium');
-    if (rail === 'ton' && !isWalletConnected.value) {
-      await connectWallet();
-      return; // user returns and taps pay again once connected
+    if (isPending(checkoutMachine.state)) return;
+    setLocalError('');
+    if (rail === 'ton') {
+      if (!tonEnabled) return;
+      if (!isWalletConnected.value) {
+        try { await connectWallet(); } catch { setLocalError('Could not open wallet connection. Try again.'); }
+        return;
+      }
     }
-    setPhase('processing');
-    setErrMsg('');
-    const result = rail === 'ton' ? await payWithTon(plan) : await payWithStars(plan);
-    settle(result);
+    await checkoutMachine.start(plan.id, rail);
   };
 
-  // ── Success state ─────────────────────────────────────────────────────
-  if (phase === 'paid') {
-    return (
-      <Sheet open onClose={onClose} title="">
-        <div class="flex flex-col items-center text-center py-7 gap-4">
-          <div class="relative">
-            <div
-              class="w-20 h-20 rounded-full grid place-items-center text-white animate-pop"
-              style={{ background: 'var(--positive)', boxShadow: '0 12px 36px -8px color-mix(in srgb, var(--positive) 60%, transparent)' }}
-            >
-              <Icon name="check" size={40} />
-            </div>
-            <span class="absolute inset-0 rounded-full ring-4 ring-positive/25 animate-ping" />
-          </div>
-          <div>
-            <h3 class="text-xl font-bold tracking-tight flex items-center justify-center gap-2">
-              You&apos;re on {plan.name} <Icon name="crown" size={20} class="text-gold" />
-            </h3>
-            <p class="text-hint text-sm mt-1">Premium features are unlocked. Happy hunting.</p>
-          </div>
-        </div>
-      </Sheet>
-    );
-  }
-
-  const railPrice = rail === 'ton' ? `${plan.priceTon} TON` : fmtStars(plan.priceStars);
-  const cta =
-    phase === 'processing' ? 'Processing…' :
-    phase === 'pending' ? 'Activating…' :
-    rail === 'ton'
-      ? (isWalletConnected.value ? `Pay ${plan.priceTon} TON` : 'Connect wallet to pay')
-      : `Pay ${fmtStars(plan.priceStars)}`;
-
-  return (
-    <Sheet open={!!plan} onClose={onClose} title={`Upgrade to ${plan.name}`}>
-      {/* Rail toggle — animated segmented control */}
-      <Segmented<Rail>
-        class="mb-4"
-        aria-label="Payment method"
-        value={rail}
-        onChange={setRail}
-        options={[
-          { value: 'ton', label: 'TON Pay', icon: <Icon name="diamond" size={15} /> },
-          { value: 'stars', label: 'Stars', icon: <Icon name="star" size={15} /> },
-        ]}
-      />
-
-      {/* Order summary */}
-      <div class="card-raised p-4 mb-3">
-        <div class="flex items-center justify-between">
-          <div>
-            <p class="font-semibold">{plan.name} · 1 month</p>
-            <p class="text-hint text-xs">{plan.tagline}</p>
-          </div>
-          <p class="text-xl font-bold tabular-nums">{railPrice}</p>
-        </div>
-        {rail === 'ton' && isWalletConnected.value && (
-          <div class="mt-3 pt-3 flex items-center justify-between text-xs" style={{ borderTop: '1px solid var(--hairline)' }}>
-            <span class="text-hint">Paying from</span>
-            <span class="font-mono flex items-center gap-1.5">
-              <span class={wallet.value.authed ? 'text-positive' : 'text-gold'}>●</span>
-              {shortAddr(wallet.value.friendlyAddress)}
-            </span>
-          </div>
-        )}
-      </div>
-
-      {/* Method explainer */}
-      <p class="text-hint text-xs mb-3 leading-relaxed flex items-start gap-2">
-        <Icon name={rail === 'ton' ? 'wallet' : 'star'} size={14} class="mt-0.5 shrink-0 text-accent" />
-        {rail === 'ton'
-          ? 'Paid on-chain from your connected TON wallet. You approve the exact amount in your wallet app — we can’t move funds without you.'
-          : 'Paid instantly with Telegram Stars. No wallet required — Telegram handles the charge securely.'}
-      </p>
-
-      {/* Inline error with a real recovery action */}
-      {phase === 'error' && (
-        <div
-          class="rounded-2xl p-3.5 mb-3 border text-sm"
-          style={{ borderColor: 'color-mix(in srgb, var(--negative) 40%, transparent)', background: 'color-mix(in srgb, var(--negative) 10%, transparent)' }}
-        >
-          <p class="font-semibold text-negative">Payment didn&apos;t go through</p>
-          <p class="text-hint text-xs mt-0.5">{errMsg}</p>
-          <div class="flex gap-2 mt-2.5">
-            <button class="btn-ghost flex-1 py-2 text-xs" onClick={pay}>
-              <Icon name="refresh" size={14} /> Try again
-            </button>
-            {rail === 'ton' && (
-              <button
-                class="btn-ghost flex-1 py-2 text-xs"
-                onClick={() => { haptic.select(); setRail('stars'); setPhase('idle'); }}
-              >
-                <Icon name="star" size={14} /> Pay with Stars
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      <button class="btn-primary w-full" onClick={pay} disabled={phase === 'processing'} aria-busy={phase === 'processing'}>
-        {phase === 'processing' ? <Spinner /> : <Icon name="lock" size={16} />}
-        {cta}
-      </button>
-
-      {/* Compact trust row */}
-      <div class="flex items-center justify-center gap-3 mt-3.5 flex-wrap">
-        {TRUST_BADGES.map((b) => (
-          <span key={b.label} class="text-[11px] text-hint flex items-center gap-1">
-            <span>{b.icon}</span>{b.label}
-          </span>
-        ))}
+  if (shownAttempt?.phase === 'paid') return (
+    <Sheet open onClose={close} title="Activation confirmed">
+      <div class="text-center py-7">
+        <Icon name="check" size={40} class="text-positive mx-auto" />
+        <h3 class="text-xl font-bold mt-3">{user.status.value?.plan || shownPlan.name} is active</h3>
+        <p class="text-hint text-sm mt-2">Your payment and entitlement were confirmed by the Engine.</p>
+        <button class="btn-primary w-full mt-4" onClick={close}>Done</button>
       </div>
     </Sheet>
   );
-}
 
-function Spinner() {
-  return <span class="inline-block w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />;
+  return (
+    <Sheet open onClose={close} title={busy ? `Checkout: ${shownPlan.name}` : `Upgrade to ${plan.name}`}>
+      <fieldset disabled={busy} class="flex gap-2 mb-4" aria-label="Payment method">
+        <button class="btn-ghost flex-1" aria-pressed={rail === 'stars'} onClick={() => setRail('stars')}>Stars</button>
+        <button class="btn-ghost flex-1" disabled={!tonEnabled} aria-pressed={rail === 'ton'} onClick={() => setRail('ton')}>TON Pay</button>
+      </fieldset>
+      <p class="text-hint text-xs mb-3">{configMessage}</p>
+      <div class="card-raised p-4 mb-3 flex justify-between">
+        <span>{shownPlan.name} · 1 month</span>
+        <strong>{(busy ? attempt!.rail : rail) === 'ton'
+          ? `${shownPlan.priceTon} TON` : fmtStars(shownPlan.priceStars)}</strong>
+      </div>
+      {shownAttempt && (
+        <div role="status" class="card-raised p-4 mb-3">
+          <p class="font-semibold">{busy ? 'Awaiting confirmation' : 'Checkout not completed'}</p>
+          <p class="text-hint text-sm mt-2">{shownAttempt.message}</p>
+          {shownAttempt.ticket?.reference && <p class="text-xs break-all mt-2">Reference: {shownAttempt.ticket.reference}</p>}
+          {shownAttempt.transactionHash && <p class="text-xs break-all mt-2">Transaction: {shownAttempt.transactionHash}</p>}
+          {shownAttempt.phase === 'pending' && (
+            <div class="flex gap-2 mt-3">
+              <button class="btn-ghost flex-1" onClick={() => void checkoutMachine.check()}>Check status</button>
+              {shownAttempt.rail === 'stars' && !shownAttempt.invoicePaid && (
+                <button class="btn-ghost flex-1" onClick={() => checkoutMachine.reopenInvoice()}>Reopen same invoice</button>
+              )}
+            </div>
+          )}
+          {busy && <p class="text-hint text-xs mt-3">You can close this sheet and return to check status. If unresolved, contact @TonGPT_Support with this reference; do not pay again.</p>}
+        </div>
+      )}
+      {localError && <p role="alert" class="text-negative text-sm mb-3">{localError}</p>}
+      <button class="btn-primary w-full" onClick={pay} disabled={busy || (rail === 'ton' && !tonEnabled)}>
+        {busy ? 'Confirmation pending…' : rail === 'ton' && !isWalletConnected.value ? 'Connect wallet to pay'
+          : rail === 'ton' ? `Pay ${plan.priceTon} TON` : `Pay ${fmtStars(plan.priceStars)}`}
+      </button>
+    </Sheet>
+  );
 }

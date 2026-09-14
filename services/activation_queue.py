@@ -128,6 +128,7 @@ async def enqueue(item: Dict[str, Any]) -> None:
         "plan_key": item.get("plan_key"),
         "enqueued_at": time.time(),
         "attempts": int(item.get("attempts", 0)),
+        **({'checkout_reference': item['checkout_reference']} if item.get('checkout_reference') else {}),
     }
     async with _lock:
         await asyncio.to_thread(_append, record)
@@ -181,6 +182,7 @@ async def drain_once() -> int:
                 duration_days=it.get("duration_days", 30),
                 amount_ton=it.get("amount_ton", 0.0),
                 amount_stars=it.get("amount_stars", 0),
+                **({'checkout_reference': it['checkout_reference']} if it.get('checkout_reference') else {}),
             )
         except Exception as e:  # never let one bad item stop the drain
             res = {"ok": False, "error": str(e), "permanent": False}

@@ -190,7 +190,8 @@ async Task RenewalRollback()
     await Counts(user, 1, 1);
 }
 
-await using (var db = Context()) await db.Database.EnsureCreatedAsync();
+await using (var db = Context()) await CheckoutTests.Migration(db);
+Console.WriteLine("PASS: checkout migration upgrade/rollback preserves legacy payments (disposable DB)");
 var tests = new (string Name, Func<Task> Run)[]
 {
     ("concurrent duplicate notification", ConcurrentDuplicate),
@@ -200,7 +201,11 @@ var tests = new (string Name, Func<Task> Run)[]
     ("concurrent TON/Stars renewals: expired", () => ConcurrentRenewals(DateTime.UtcNow.AddDays(-1))),
     ("concurrent TON/Stars renewals: no expiry", () => ConcurrentRenewals(null)),
     ("concurrent duplicate renewal", ConcurrentRenewalDuplicate),
-    ("rollback after renewal update and retry", RenewalRollback)
+    ("rollback after renewal update and retry", RenewalRollback),
+    ("checkout correlation and per-user authorization for TON/Stars", async () => {
+        await using var db = Context();
+        await CheckoutTests.AuthorizationAndCorrelation(db);
+    })
 };
 var failures = 0;
 foreach (var test in tests)

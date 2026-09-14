@@ -25,6 +25,7 @@ services:
       - BOT_TOKEN=${BOT_TOKEN}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN}
       - ENGINE_API_KEY=${ENGINE_API_KEY:?Set ENGINE_API_KEY}
+      - WALLET_LINK_SIGNING_SECRET=${WALLET_LINK_SIGNING_SECRET:?Set WALLET_LINK_SIGNING_SECRET for user-scoped checkout}
       - REFERRAL_SECRET=${REFERRAL_SECRET:?Set REFERRAL_SECRET}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS}
       - PAYMENT_WALLET_ADDRESS=${PAYMENT_WALLET_ADDRESS:?Set PAYMENT_WALLET_ADDRESS}
@@ -93,6 +94,7 @@ services:
       - ConnectionStrings__DefaultConnection=Host=postgres;Database=tongpt;Username=tongpt;Password=${POSTGRES_PASSWORD}
       - ASPNETCORE_ENVIRONMENT=Production
       - EngineApiKey=${ENGINE_API_KEY:?Set ENGINE_API_KEY}
+      - WalletLinkSigningSecret=${WALLET_LINK_SIGNING_SECRET:?Set WALLET_LINK_SIGNING_SECRET for user-scoped checkout}
       - AllowedHosts=${ENGINE_ALLOWED_HOSTS:-tongpt-engine;localhost;127.0.0.1}
     networks:
       - tongpt-network

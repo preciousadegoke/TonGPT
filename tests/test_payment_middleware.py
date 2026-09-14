@@ -72,7 +72,8 @@ async def send_message(dispatcher, **fields):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("engine_available", [True, False], ids=["activated", "queued"])
-async def test_successful_payment_bypasses_saturated_limiter(payment_dispatcher, engine_available):
+@pytest.mark.parametrize("checkout_reference", [None, 'a' * 32], ids=['legacy-invoice', 'miniapp-invoice'])
+async def test_successful_payment_bypasses_saturated_limiter(payment_dispatcher, engine_available, checkout_reference):
     dispatcher, engine, limiter, queue, reply = payment_dispatcher
     engine.complete_payment.return_value = (
         {"ok": True, "payment_id": "payment-1"} if engine_available else
@@ -80,7 +81,7 @@ async def test_successful_payment_bypasses_saturated_limiter(payment_dispatcher,
     )
     await send_message(dispatcher, successful_payment={
         "currency": "XTR", "total_amount": expected_stars("pro"),
-        "invoice_payload": "premium_pro",
+        "invoice_payload": "premium_pro" + (f'|{checkout_reference}|1001' if checkout_reference else ''),
         "telegram_payment_charge_id": "charge-1", "provider_payment_charge_id": "",
     })
 
@@ -88,6 +89,7 @@ async def test_successful_payment_bypasses_saturated_limiter(payment_dispatcher,
         telegram_id=1001, plan="Pro", provider="telegram_stars",
         external_id="charge-1", duration_days=30,
         amount_ton=0.0, amount_stars=expected_stars("pro"),
+        **({'checkout_reference': checkout_reference} if checkout_reference else {}),
     )
     if engine_available:
         assert await queue.pending_count() == 0
@@ -97,6 +99,7 @@ async def test_successful_payment_bypasses_saturated_limiter(payment_dispatcher,
         assert records[0]["external_id"] == "charge-1"
         assert records[0]["user_id"] == 1001
         assert records[0]["amount_stars"] == expected_stars("pro")
+        assert records[0].get('checkout_reference') == checkout_reference
     limiter.check_rate_limit.assert_not_awaited()
     engine.get_user_status.assert_not_awaited()
     reply.assert_awaited_once()
