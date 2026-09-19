@@ -129,6 +129,7 @@ async def enqueue(item: Dict[str, Any]) -> None:
         "enqueued_at": time.time(),
         "attempts": int(item.get("attempts", 0)),
         **({'checkout_reference': item['checkout_reference']} if item.get('checkout_reference') else {}),
+        **({k: item.get(k) for k in ('quote_reference', 'paid_units', 'paid_at')} if item.get('quote_reference') else {}),
     }
     async with _lock:
         await asyncio.to_thread(_append, record)
@@ -183,6 +184,7 @@ async def drain_once() -> int:
                 amount_ton=it.get("amount_ton", 0.0),
                 amount_stars=it.get("amount_stars", 0),
                 **({'checkout_reference': it['checkout_reference']} if it.get('checkout_reference') else {}),
+                **({k: it.get(k) for k in ('quote_reference', 'paid_units', 'paid_at')} if it.get('quote_reference') else {}),
             )
         except Exception as e:  # never let one bad item stop the drain
             res = {"ok": False, "error": str(e), "permanent": False}
@@ -195,7 +197,11 @@ async def drain_once() -> int:
                 already=res.get("already_processed"),
             )
             await _notify_user(it)
-        elif res.get("permanent"):
+        elif res.get('held') and res.get('payment_id'):
+            # The receipt is now durably held in PostgreSQL, not activated.
+            log.warning('payment_reconciliation_required', payment_id=res['payment_id'], external_id=it['external_id'])
+            await _alert(it, reason='reconciliation_required')
+        elif res.get("permanent") and not it.get('quote_reference'):
             # e.g. invalid plan — retrying will never help. Drop it but shout.
             log.error(
                 "activation_dropped_permanent",

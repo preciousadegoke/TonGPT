@@ -1,18 +1,20 @@
 import { commentBoc, normalizedMessageHash } from './ton-checkout';
+import { Address } from '@ton/core';
 
 export type Rail = 'ton' | 'stars';
-export type Phase = 'preparing' | 'wallet' | 'invoice' | 'pending' | 'paid' | 'cancelled' | 'error';
+export type Phase = 'preparing' | 'review' | 'wallet' | 'invoice' | 'pending' | 'held' | 'paid' | 'cancelled' | 'error';
 export interface Ticket {
   reference: string; token: string; plan: string; rail: Rail;
   network?: 'mainnet' | 'testnet'; address?: string; sender?: string;
   amount?: string; memo?: string; valid_until?: number; invoice_url?: string;
+  kind?: 'upgrade'; expected_units?: number; subscription_expiry?: string;
 }
 export interface Attempt {
   id: number; plan: string; rail: Rail; phase: Phase; message: string;
   ticket?: Ticket; messageHash?: string; transactionHash?: string; invoicePaid?: boolean;
 }
 export interface Activation {
-  status: 'pending' | 'activated'; paymentId?: string; entitlementActive?: boolean;
+  status: 'pending' | 'activated' | 'reconciliation_required'; paymentId?: string; entitlementActive?: boolean;
   plan?: string; expiry?: string; transaction_hash?: string; lookup_error?: string;
 }
 export interface Dependencies {
@@ -24,13 +26,14 @@ export interface Dependencies {
     messages: { address: string; amount: string; payload: string }[] }): Promise<{ boc: string }>;
   openInvoice?: (url: string, callback: (status: string) => void) => void;
   status(ticket: Ticket, messageHash?: string): Promise<Activation>;
+  validateQuote?(ticket: Ticket): Promise<unknown>;
   activated(result: Activation): void;
   changed(attempt: Attempt | null): void;
   rejected(error: unknown): boolean;
 }
 
 export const isPending = (attempt: Attempt | null) => !!attempt &&
-  ['preparing', 'wallet', 'invoice', 'pending'].includes(attempt.phase);
+  ['preparing', 'review', 'wallet', 'invoice', 'pending', 'held'].includes(attempt.phase);
 
 /** One outstanding attempt survives sheet closure; generation IDs reject stale callbacks. */
 export class CheckoutMachine {
@@ -43,7 +46,7 @@ export class CheckoutMachine {
   constructor(private deps: Dependencies) {}
 
   dismiss() {
-    if (isPending(this.state)) return;
+    if (isPending(this.state) && this.state?.phase !== 'review') return;
     this.clearTimers();
     this.generation++;
     this.state = null;
@@ -53,11 +56,15 @@ export class CheckoutMachine {
   restore(saved: Attempt) {
     if (!saved.ticket || !isPending(saved)) return;
     this.generation = saved.id;
-    this.state = { ...saved, phase: 'pending', message: 'Previous checkout is unconfirmed. Check status before paying again.' };
+    this.state = { ...saved, phase: saved.phase === 'review' || saved.phase === 'held' ? saved.phase : 'pending',
+      message: saved.phase === 'review' || saved.phase === 'held' ? saved.message : 'Previous checkout is unconfirmed. Check status before paying again.' };
     this.deps.changed(this.state);
   }
   private update(id: number, patch: Partial<Attempt>) {
     if (this.state?.id !== id || this.state.phase === 'paid') return false;
+    // A late wallet/invoice callback must never turn a durable hold into a
+    // cancellation or an invitation to pay again. Only reconciliation may resolve it.
+    if (this.state.phase === 'held' && patch.phase && !['held', 'paid'].includes(patch.phase)) return false;
     this.state = { ...this.state, ...patch };
     this.deps.changed(this.state);
     return true;
@@ -69,8 +76,20 @@ export class CheckoutMachine {
     this.pollUntil = Date.now() + 120_000;
     void this.check();
   }
-  async start(plan: string, rail: Rail) {
-    if (isPending(this.state)) return;
+  async confirmUpgrade() {
+    const attempt = this.state;
+    if (attempt?.phase !== 'review' || !attempt.ticket) return;
+    try {
+      if (!this.deps.validateQuote) throw new Error('Quote validation unavailable. No payment requested.');
+      await this.deps.validateQuote(attempt.ticket);
+      if (this.state?.id !== attempt.id || this.state.phase !== 'review') return;
+      await this.start(attempt.plan, attempt.rail, attempt.ticket);
+    } catch (error) {
+      this.update(attempt.id, { phase: 'error', message: (error as Error).message });
+    }
+  }
+  async start(plan: string, rail: Rail, approvedTicket?: Ticket) {
+    if (isPending(this.state) && !(approvedTicket && this.state?.phase === 'review' && this.state.ticket === approvedTicket)) return;
     this.clearTimers();
     const id = ++this.generation;
     this.state = { id, plan, rail, phase: 'preparing', message: 'Preparing checkout…' };
@@ -78,21 +97,31 @@ export class CheckoutMachine {
     try {
       if (rail === 'stars') {
         if (!this.deps.openInvoice) throw new Error('Open this miniapp inside Telegram to pay with Stars.');
-        const ticket = await this.deps.quoteStars(plan);
+        const ticket = approvedTicket || await this.deps.quoteStars(plan);
         if (!ticket.invoice_url || !ticket.token) throw new Error('No invoice was created. Try again.');
         if (!this.update(id, { ticket })) return;
+        if (ticket.kind === 'upgrade' && !approvedTicket) {
+          this.update(id, { phase: 'review', message: `Review the prorated upgrade. Expiry stays ${ticket.subscription_expiry}.` });
+          return;
+        }
         this.openStars(id, ticket);
         return;
       }
       const account = this.deps.account();
       if (!account) throw new Error('Connect a wallet first.');
-      const ticket = await this.deps.quoteTon(plan, account.address);
+      const ticket = approvedTicket || await this.deps.quoteTon(plan, account.address);
       if (ticket.network !== this.deps.network) throw new Error('Frontend and backend networks differ. Payment was not requested.');
       const chain = ticket.network === 'testnet' ? '-3' : '-239';
       if (account.chain !== chain) throw new Error(`Switch your wallet to ${ticket.network}.`);
+      if (ticket.sender && !Address.parse(ticket.sender).equals(Address.parse(account.address)))
+        throw new Error('Connected wallet changed. Request a new quote before paying.');
       if (!ticket.address || !ticket.amount || !ticket.memo || !ticket.valid_until || !ticket.token)
         throw new Error('Backend returned an incomplete payment quote.');
       const payload = commentBoc(ticket.memo);
+      if (ticket.kind === 'upgrade' && !approvedTicket) {
+        this.update(id, { ticket, phase: 'review', message: `Review the prorated upgrade. Expiry stays ${ticket.subscription_expiry}.` });
+        return;
+      }
       if (!this.update(id, { ticket, phase: 'wallet', message: `Approve the ${ticket.network} transfer in your wallet.` })) return;
       this.timer = setTimeout(() => this.pending(id, 'Wallet confirmation timed out. Check your wallet and status; do not submit another payment.'), 120_000);
       try {
@@ -142,14 +171,17 @@ export class CheckoutMachine {
   }
   async check() {
     const attempt = this.state;
-    if (!attempt?.ticket || !isPending(attempt) || this.polling) return;
+    if (!attempt?.ticket || !isPending(attempt) || attempt.phase === 'review' || this.polling) return;
     const id = attempt.id;
     this.polling = true;
     clearTimeout(this.pollTimer);
     try {
       const result = await this.deps.status(attempt.ticket, attempt.messageHash);
       if (this.state?.id !== id || !isPending(this.state)) return;
-      if (result.status === 'activated' && result.paymentId && result.entitlementActive && result.expiry && Date.parse(result.expiry) > Date.now()) {
+      if (result.status === 'reconciliation_required' && result.paymentId) {
+        this.clearTimers();
+        this.update(id, { phase: 'held', message: `Payment ${result.paymentId} is held for reconciliation. Your plan and expiry were not changed. Contact support; do not pay again.` });
+      } else if (result.status === 'activated' && result.paymentId && result.entitlementActive && result.expiry && Date.parse(result.expiry) > Date.now()) {
         this.clearTimers();
         this.update(id, { phase: 'paid', message: 'Engine confirmed activation.', transactionHash: result.transaction_hash });
         this.deps.activated(result);

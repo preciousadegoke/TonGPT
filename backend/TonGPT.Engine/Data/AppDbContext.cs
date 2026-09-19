@@ -9,12 +9,15 @@ namespace TonGPT.Engine.Data
 
         public DbSet<User> Users { get; set; }
         public DbSet<Payment> Payments { get; set; }
+        public DbSet<UpgradeQuote> UpgradeQuotes { get; set; }
+        public DbSet<PaymentReconciliation> PaymentReconciliations { get; set; }
         public DbSet<ChatMessage> ChatMessages { get; set; }
         public DbSet<ActivityLog> ActivityLogs { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
+            modelBuilder.Entity<PaymentReconciliation>().Property(p => p.ActualUnits).HasPrecision(28, 9);
             
             modelBuilder.Entity<User>()
                 .HasIndex(u => u.TelegramId)

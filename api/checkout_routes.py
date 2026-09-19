@@ -41,21 +41,21 @@ def install_checkout_routes(app, verify_init_data):
     async def ton_quote(body: TonQuoteBody, request: Request, response: Response):
         user_id = authenticate(request, response)
         try:
-            return checkout.ton_quote(user_id, body.plan, body.sender)
+            return await checkout.prepare_ticket(checkout.ton_quote(user_id, body.plan, body.sender))
         except (ValueError, KeyError) as exc:
             raise HTTPException(400, str(exc))
         except RuntimeError:
-            raise HTTPException(503, 'Checkout signing is not configured')
+            raise HTTPException(503, 'Could not prepare checkout. No payment requested.')
 
     @app.post('/api/checkout/stars')
     async def stars(body: StarsBody, request: Request, response: Response):
         user_id = authenticate(request, response)
         try:
-            ticket = checkout.stars_ticket(user_id, body.plan)
+            ticket = await checkout.prepare_ticket(checkout.stars_ticket(user_id, body.plan))
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except RuntimeError:
-            raise HTTPException(503, 'Checkout signing is not configured')
+            raise HTTPException(503, 'Could not prepare checkout. No payment requested.')
         from core.bot_instance import get_bot
         from core.pricing import PLANS
         from aiogram.types import LabeledPrice
@@ -65,15 +65,30 @@ def install_checkout_routes(app, verify_init_data):
         plan = PLANS[body.plan]
         try:
             url = await bot.create_invoice_link(
-                title=f"TonGPT {plan['name']}", description=f"Upgrade to {plan['name']} (1 month).",
+                title=f"TonGPT {plan['name']}", description=(f"Prorated upgrade; expiry remains {ticket['subscription_expiry']}"
+                    if ticket.get('kind') == 'upgrade' else f"{plan['name']} (30 days)."),
                 payload=checkout.invoice_payload(ticket), provider_token='', currency='XTR',
-                prices=[LabeledPrice(label=plan['name'], amount=plan['price_stars'])],
+                prices=[LabeledPrice(label=plan['name'], amount=ticket.get('expected_units', plan['price_stars']))],
             )
         except Exception:
             raise HTTPException(502, 'Could not create invoice')
         if not url:
             raise HTTPException(502, 'Invoice service returned no URL')
         return {**ticket, 'invoice_url': url}
+
+    @app.post('/api/checkout/validate')
+    async def validate(body: StatusBody, request: Request, response: Response):
+        user_id = authenticate(request, response)
+        try:
+            ticket = checkout.read_ticket(body.token, user_id)
+            if ticket.get('kind') != 'upgrade':
+                raise ValueError('Not an upgrade quote')
+            await checkout.validate_upgrade(user_id, ticket['quote_reference'])
+            return {'valid': True}
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+        except Exception:
+            raise HTTPException(503, 'Could not validate quote. No payment requested.')
 
     @app.post('/api/checkout/status')
     async def status(body: StatusBody, request: Request, response: Response):

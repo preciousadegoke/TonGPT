@@ -147,6 +147,10 @@ def parse_memo(text: Optional[str]) -> Optional[Dict[str, Any]]:
     if len(parts) != 4:
         return None
     prefix, uid, plan, nonce = parts
+    if prefix == 'TGU1':
+        if not uid.isdigit() or not is_valid_plan(plan) or len(nonce) != 32 or any(c not in '0123456789abcdef' for c in nonce):
+            return None
+        return {'user_id': int(uid), 'plan_key': plan, 'nonce': nonce, 'quote_reference': nonce}
     if prefix != MEMO_PREFIX or not uid.isdigit() or not is_valid_plan(plan) or not nonce.isalnum():
         return None
     return {"user_id": int(uid), "plan_key": plan, "nonce": nonce}
@@ -241,6 +245,7 @@ def _mark_processed(external_id: str) -> None:
 async def activate_from_payment(
     user_id: int, plan_key: str, external_id: str, amount_nanoton: int,
     checkout_reference: Optional[str] = None,
+    quote_reference: Optional[str] = None, paid_at: Optional[str] = None,
 ) -> str:
     """Activate via Postgres (atomic/idempotent). Returns a status string:
 
@@ -253,9 +258,10 @@ async def activate_from_payment(
         plan=plan_to_engine(plan_key),
         provider="ton",
         external_id=external_id,
-        duration_days=duration_days(plan_key),
+        duration_days=0 if quote_reference else duration_days(plan_key),
         amount_ton=amount_nanoton / 1e9,
         **({'checkout_reference': checkout_reference} if checkout_reference else {}),
+        **({'quote_reference': quote_reference, 'paid_units': amount_nanoton, 'paid_at': paid_at} if quote_reference else {}),
     )
 
     if res.get("ok"):
@@ -270,7 +276,11 @@ async def activate_from_payment(
         log.info("ton_payment_activated", user_id=user_id, plan=plan_key, external_id=external_id)
         return "activated"
 
-    if res.get("permanent"):
+    if res.get('held') and res.get('payment_id'):
+        log.warning('ton_payment_held', payment_id=res['payment_id'], external_id=external_id)
+        return 'held'
+
+    if res.get("permanent") and not quote_reference:
         log.error(
             "ton_payment_permanent_failure",
             user_id=user_id, plan=plan_key, external_id=external_id,
@@ -286,11 +296,12 @@ async def activate_from_payment(
             "plan": plan_to_engine(plan_key),
             "provider": "ton",
             "external_id": external_id,
-            "duration_days": duration_days(plan_key),
+            "duration_days": 0 if quote_reference else duration_days(plan_key),
             "plan_key": plan_key,
             # Carry the paid amount so the queue drain passes the Engine's amount
             "amount_ton": amount_nanoton / 1e9,  # validation (PAY-001).
             **({'checkout_reference': checkout_reference} if checkout_reference else {}),
+            **({'quote_reference': quote_reference, 'paid_units': amount_nanoton, 'paid_at': paid_at} if quote_reference else {}),
         })
         log.warning("ton_payment_queued", user_id=user_id, plan=plan_key, external_id=external_id)
         return "queued"
@@ -519,7 +530,8 @@ async def _process_one_event(ev: Dict[str, Any]) -> tuple[int, bool]:
         except (TypeError, ValueError) as e:
             raise ValueError("TON payment has an invalid amount") from e
 
-        if not validate_amount(amount_nanoton, parsed["plan_key"]):
+        quote_reference = parsed.get('quote_reference')
+        if not quote_reference and not validate_amount(amount_nanoton, parsed["plan_key"]):
             log.warning(
                 "ton_payment_underpaid",
                 user_id=parsed["user_id"], plan=parsed["plan_key"],
@@ -532,14 +544,24 @@ async def _process_one_event(ev: Dict[str, Any]) -> tuple[int, bool]:
                 _mark_processed(external_id)  # notification suppression only
             continue
 
+        from datetime import datetime, timezone
+        paid_at = None
+        if quote_reference and ev.get('timestamp') is not None:
+            try:
+                paid_at = datetime.fromtimestamp(ev['timestamp'], timezone.utc).isoformat()
+            except (TypeError, ValueError, OverflowError, OSError):
+                # Preserve the receipt: the Engine holds an unverifiable payment
+                # timestamp for reconciliation instead of losing the transfer.
+                pass
         status = await activate_from_payment(
             parsed["user_id"], parsed["plan_key"], external_id, amount_nanoton,
-            checkout_reference=tr['comment'].strip(),
+            checkout_reference=quote_reference or tr['comment'].strip(),
+            **({'quote_reference': quote_reference, 'paid_at': paid_at} if quote_reference else {}),
         )
         # Legacy ton_done markers include queued payments. Always ask the Engine
         # about paid transfers; neither the cache nor the shared queue proves a
         # payment was committed (the queue's torn-tail issue is a separate fix).
-        if status not in ("activated", "already"):
+        if status not in ("activated", "already", "held"):
             log.warning("ton_checkpoint_blocked", external_id=external_id, status=status)
             return activated, False
         if status == "activated":

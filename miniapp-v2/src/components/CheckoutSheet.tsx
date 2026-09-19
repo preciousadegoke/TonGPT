@@ -22,7 +22,7 @@ export function CheckoutSheet({ plan, onClose }: Props) {
   useEffect(() => {
     const id = ++generation.current;
     if (!plan) {
-      if (!isPending(checkoutMachine.state)) checkoutMachine.dismiss();
+      checkoutMachine.dismiss();
       return;
     }
     setTonEnabled(false);
@@ -46,12 +46,15 @@ export function CheckoutSheet({ plan, onClose }: Props) {
   if (!plan) return null;
   const shownAttempt = attempt && (busy || attempt.plan === plan.id) ? attempt : null;
   const shownPlan = busy ? PLANS.find((p) => p.id === attempt!.plan) || plan : plan;
+  const upgrade = shownAttempt?.ticket?.kind === 'upgrade' ? shownAttempt.ticket : null;
+  const upgradePrice = upgrade ? (shownAttempt!.rail === 'ton' ? `${Number(upgrade.amount) / 1e9} TON` : fmtStars(upgrade.expected_units!)) : '';
   const close = () => {
     generation.current++;
-    if (!isPending(checkoutMachine.state)) checkoutMachine.dismiss();
+    checkoutMachine.dismiss();
     onClose();
   };
   const pay = async () => {
+    if (checkoutMachine.state?.phase === 'review') { await checkoutMachine.confirmUpgrade(); return; }
     if (isPending(checkoutMachine.state)) return;
     setLocalError('');
     if (rail === 'ton') {
@@ -83,30 +86,30 @@ export function CheckoutSheet({ plan, onClose }: Props) {
       </fieldset>
       <p class="text-hint text-xs mb-3">{configMessage}</p>
       <div class="card-raised p-4 mb-3 flex justify-between">
-        <span>{shownPlan.name} · 1 month</span>
-        <strong>{(busy ? attempt!.rail : rail) === 'ton'
+        <span>{shownPlan.name} · {upgrade ? 'Prorated upgrade' : '30 days'}</span>
+        <strong>{upgrade ? upgradePrice : (busy ? attempt!.rail : rail) === 'ton'
           ? `${shownPlan.priceTon} TON` : fmtStars(shownPlan.priceStars)}</strong>
       </div>
       {shownAttempt && (
         <div role="status" class="card-raised p-4 mb-3">
-          <p class="font-semibold">{busy ? 'Awaiting confirmation' : 'Checkout not completed'}</p>
+          <p class="font-semibold">{shownAttempt.phase === 'review' ? 'Review upgrade quote' : shownAttempt.phase === 'held' ? 'Payment held for review' : busy ? 'Awaiting confirmation' : 'Checkout not completed'}</p>
           <p class="text-hint text-sm mt-2">{shownAttempt.message}</p>
           {shownAttempt.ticket?.reference && <p class="text-xs break-all mt-2">Reference: {shownAttempt.ticket.reference}</p>}
           {shownAttempt.transactionHash && <p class="text-xs break-all mt-2">Transaction: {shownAttempt.transactionHash}</p>}
-          {shownAttempt.phase === 'pending' && (
+          {(shownAttempt.phase === 'pending' || shownAttempt.phase === 'held') && (
             <div class="flex gap-2 mt-3">
               <button class="btn-ghost flex-1" onClick={() => void checkoutMachine.check()}>Check status</button>
-              {shownAttempt.rail === 'stars' && !shownAttempt.invoicePaid && (
+              {shownAttempt.phase === 'pending' && shownAttempt.rail === 'stars' && !shownAttempt.invoicePaid && (
                 <button class="btn-ghost flex-1" onClick={() => checkoutMachine.reopenInvoice()}>Reopen same invoice</button>
               )}
             </div>
           )}
-          {busy && <p class="text-hint text-xs mt-3">You can close this sheet and return to check status. If unresolved, contact @TonGPT_Support with this reference; do not pay again.</p>}
+          {busy && shownAttempt.phase !== 'review' && <p class="text-hint text-xs mt-3">You can close this sheet and return to check status. If unresolved, contact @TonGPT_Support with this reference; do not pay again.</p>}
         </div>
       )}
       {localError && <p role="alert" class="text-negative text-sm mb-3">{localError}</p>}
-      <button class="btn-primary w-full" onClick={pay} disabled={busy || (rail === 'ton' && !tonEnabled)}>
-        {busy ? 'Confirmation pending…' : rail === 'ton' && !isWalletConnected.value ? 'Connect wallet to pay'
+      <button class="btn-primary w-full" onClick={pay} disabled={(busy && shownAttempt?.phase !== 'review') || (rail === 'ton' && !tonEnabled)}>
+        {shownAttempt?.phase === 'review' ? `Confirm upgrade: ${upgradePrice}` : busy ? 'Confirmation pending…' : rail === 'ton' && !isWalletConnected.value ? 'Connect wallet to pay'
           : rail === 'ton' ? `Pay ${plan.priceTon} TON` : `Pay ${fmtStars(plan.priceStars)}`}
       </button>
     </Sheet>

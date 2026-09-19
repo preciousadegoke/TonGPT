@@ -82,11 +82,11 @@ class EngineClient:
             logger.error(f"Engine API connection failed: {e}")
             raise EngineServerError("Engine unreachable") from e
 
-    async def _post(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _post(self, endpoint: str, data: Dict[str, Any], extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Internal helper for POST requests"""
         session = await self._get_session()
         try:
-            async with session.post(f"{self.base_url}/{endpoint}", json=data, headers=self._headers()) as response:
+            async with session.post(f"{self.base_url}/{endpoint}", json=data, headers={**self._headers(), **(extra_headers or {})}) as response:
                 if response.status in [200, 201]:
                     return await response.json()
 
@@ -236,6 +236,9 @@ class EngineClient:
         amount_stars: int = 0,
         max_attempts: int = 3,
         checkout_reference: Optional[str] = None,
+        quote_reference: Optional[str] = None,
+        paid_units: Optional[int] = None,
+        paid_at: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Atomically record a payment AND activate the subscription (Postgres SoT).
 
@@ -266,6 +269,7 @@ class EngineClient:
             "amountTon": float(amount_ton),
             "amountStars": int(amount_stars),
             **({'checkoutReference': checkout_reference} if checkout_reference else {}),
+            **({'quoteReference': quote_reference, 'paidUnits': paid_units, 'paidAt': paid_at} if quote_reference else {}),
         }
         last_error: Any = None
         for attempt in range(1, max_attempts + 1):
@@ -276,6 +280,11 @@ class EngineClient:
                 result = {"error": "exception", "message": str(e)}
 
             if "error" not in result:
+                if result.get('status') == 'ReconciliationRequired':
+                    if not result.get('paymentId'):
+                        return {'ok': False, 'permanent': False, 'error': 'Unconfirmed reconciliation receipt'}
+                    return {'ok': False, 'held': True, 'permanent': False,
+                            'payment_id': str(result['paymentId']), 'already_processed': bool(result.get('alreadyProcessed'))}
                 return {
                     "ok": True,
                     "already_processed": bool(result.get("alreadyProcessed")),

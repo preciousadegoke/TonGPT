@@ -118,13 +118,13 @@ async Task ConcurrentRenewals(DateTime? initialExpiry)
     var user = "renewal-" + Guid.NewGuid().ToString("N");
     await using (var db = Context())
     {
-        db.Users.Add(new User { TelegramId = user, SubscriptionExpiry = initialExpiry });
+        db.Users.Add(new User { TelegramId = user, Plan = SubscriptionPlan.Pro, SubscriptionExpiry = initialExpiry });
         await db.SaveChangesAsync();
     }
     var requests = new[] { Request(user, "ton-" + user), Request(user, "stars-" + user) };
     requests[1].Provider = "telegram_stars";
     requests[1].AmountStars = 100000;
-    requests[1].DurationDays = 17;
+    requests[1].DurationDays = 30;
     var started = DateTime.UtcNow;
     var barrier = new ConcurrentSaveBarrier();
     var responses = await Task.WhenAll(Complete(requests[0], barrier), Complete(requests[1], barrier));
@@ -132,9 +132,9 @@ async Task ConcurrentRenewals(DateTime? initialExpiry)
     await using var check = Context();
     var saved = await check.Users.AsNoTracking().SingleAsync(u => u.TelegramId == user);
     if (initialExpiry > started)
-        Check(saved.SubscriptionExpiry == initialExpiry.Value.AddDays(47), "Concurrent renewals must add BOTH durations to the existing expiry");
+        Check(saved.SubscriptionExpiry == initialExpiry.Value.AddDays(60), "Two valid 30-day renewals must add 60 days to the existing expiry");
     else
-        Check(saved.SubscriptionExpiry >= started.AddDays(47) && saved.SubscriptionExpiry <= DateTime.UtcNow.AddDays(47),
+        Check(saved.SubscriptionExpiry >= started.AddDays(60) && saved.SubscriptionExpiry <= DateTime.UtcNow.AddDays(60),
             "Expired/null subscriptions must receive BOTH durations from now");
     Check(saved.Plan == SubscriptionPlan.Pro, "Renewal must update the plan");
     Check(responses.Max(r => r.Body.GetProperty("expiry").GetDateTime()) == saved.SubscriptionExpiry,
@@ -206,7 +206,7 @@ var tests = new (string Name, Func<Task> Run)[]
         await using var db = Context();
         await CheckoutTests.AuthorizationAndCorrelation(db);
     })
-};
+}.Concat(new UpgradeTests(interceptors => Context(interceptors)).Cases()).ToArray();
 var failures = 0;
 foreach (var test in tests)
 {

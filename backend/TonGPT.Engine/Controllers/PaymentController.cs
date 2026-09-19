@@ -41,11 +41,16 @@ namespace TonGPT.Engine.Controllers
             public long AmountStars { get; set; } = 0;      // paid Stars (for telegram_stars)
             [System.ComponentModel.DataAnnotations.MaxLength(128)]
             public string? CheckoutReference { get; set; }
+            public string? QuoteReference { get; set; }
+            public long? PaidUnits { get; set; }
+            public DateTime? PaidAt { get; set; }
         }
 
         [HttpPost("complete")]
         public async Task<IActionResult> Complete([FromBody] CompletePaymentRequest request)
         {
+            if (request.QuoteReference != null)
+                return await new Services.UpgradePayments(_context, _logger).Complete(request);
             if (string.IsNullOrWhiteSpace(request.TelegramId)
                 || string.IsNullOrWhiteSpace(request.Plan)
                 || string.IsNullOrWhiteSpace(request.Provider))
@@ -68,7 +73,7 @@ namespace TonGPT.Engine.Controllers
                 return BadRequest(new { message = $"Invalid plan: {request.Plan}" });
             }
 
-            var durationDays = request.DurationDays > 0 ? request.DurationDays : 30;
+            var durationDays = request.DurationDays;
             var now = DateTime.UtcNow;
 
             // ---- Fast idempotency pre-check (cheap, avoids building state) ----
@@ -79,6 +84,10 @@ namespace TonGPT.Engine.Controllers
                     p => p.ExternalId == request.ExternalId && p.Provider == request.Provider);
                 if (dup != null)
                 {
+                    if (dup.Status == "ReconciliationRequired")
+                        return dup.TelegramUserId == request.TelegramId
+                            ? Services.UpgradePayments.Held(dup, true)
+                            : Conflict(new { message = "Payment identifier conflict." });
                     var existingUser = await _context.Users
                         .FirstOrDefaultAsync(x => x.TelegramId == request.TelegramId);
                     _logger.LogInformation(
@@ -93,6 +102,11 @@ namespace TonGPT.Engine.Controllers
                     });
                 }
             }
+
+            // Historical receipts still replay; only NEW cycles must use the
+            // currently supported billing period.
+            if (durationDays != Services.UpgradePricing.CycleDays)
+                return BadRequest(new { message = "The only supported billing period is 30 days." });
 
             // ---- Authoritative amount validation (PAY-001) ----
             // The ENGINE — not the caller — decides whether enough was paid, using
@@ -154,7 +168,7 @@ namespace TonGPT.Engine.Controllers
             };
             _context.Payments.Add(payment);
 
-            _context.ActivityLogs.Add(new ActivityLog
+            var audit = new ActivityLog
             {
                 TelegramId = request.TelegramId,
                 Action = "payment_completed",
@@ -167,7 +181,8 @@ namespace TonGPT.Engine.Controllers
                 }),
                 Success = true,
                 Timestamp = now
-            });
+            };
+            _context.ActivityLogs.Add(audit);
 
             try
             {
@@ -177,6 +192,23 @@ namespace TonGPT.Engine.Controllers
                 await using var transaction = await _context.Database.BeginTransactionAsync();
                 await _context.SaveChangesAsync();
 
+                var locked = await _context.Users.FromSqlInterpolated(
+                    $"SELECT * FROM \"Users\" WHERE \"TelegramId\" = {request.TelegramId} FOR UPDATE")
+                    .AsNoTracking().SingleAsync();
+                if (locked.Plan != SubscriptionPlan.Free && locked.SubscriptionExpiry > now && locked.Plan != plan)
+                {
+                    payment.Status = "ReconciliationRequired";
+                    audit.Action = "payment_held";
+                    audit.Success = false;
+                    _context.PaymentReconciliations.Add(new PaymentReconciliation {
+                        PaymentId = payment.Id, Reason = "ExplicitTierChangeRequired", Currency = provider == "telegram_stars" ? "XTR" : "TON",
+                        ActualUnits = provider == "telegram_stars" ? request.AmountStars : request.AmountTon * 1_000_000_000m,
+                    });
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+                    return Services.UpgradePayments.Held(payment, false);
+                }
+
                 // Compute from the current database value, not the earlier
                 // tracked read. PostgreSQL serializes updates to this user so
                 // concurrent distinct payments each add their full duration.
@@ -184,6 +216,7 @@ namespace TonGPT.Engine.Controllers
                     .Where(u => u.TelegramId == request.TelegramId)
                     .ExecuteUpdateAsync(setters => setters
                         .SetProperty(u => u.Plan, plan)
+                        .SetProperty(u => u.EntitlementVersion, u => u.EntitlementVersion + 1)
                         .SetProperty(u => u.SubscriptionExpiry, u =>
                             (u.SubscriptionExpiry.HasValue && u.SubscriptionExpiry.Value > now
                                 ? u.SubscriptionExpiry.Value : now).AddDays(durationDays)));
@@ -220,6 +253,10 @@ namespace TonGPT.Engine.Controllers
                 }
 
                 var u1 = await _context.Users.FirstOrDefaultAsync(x => x.TelegramId == request.TelegramId);
+                if (existing.Status == "ReconciliationRequired")
+                    return existing.TelegramUserId == request.TelegramId
+                        ? Services.UpgradePayments.Held(existing, true)
+                        : Conflict(new { message = "Payment identifier conflict." });
                 _logger.LogInformation(
                     "Payment/complete concurrent duplicate resolved for ExternalId {ExternalId}.",
                     request.ExternalId);

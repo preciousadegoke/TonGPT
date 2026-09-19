@@ -89,14 +89,15 @@ def stars_ticket(user_id, plan):
 
 
 def invoice_payload(ticket):
-    return f"premium_{ticket['plan']}|{ticket['reference']}|{ticket['user_id']}"
+    prefix = 'upgrade' if ticket.get('kind') == 'upgrade' else 'premium'
+    return f"{prefix}_{ticket['plan']}|{ticket['reference']}|{ticket['user_id']}"
 
 
 def parse_invoice(payload, user_id):
     """Legacy bot invoices stay valid; new miniapp invoices are payer-bound."""
     parts = payload.split('|')
-    plan = parts[0].removeprefix('premium_')
-    if len(parts) == 1:
+    plan = parts[0].removeprefix('premium_').removeprefix('upgrade_')
+    if len(parts) == 1 and not payload.startswith('upgrade_'):
         return plan, None
     if len(parts) != 3 or not re.fullmatch(r'[0-9a-f]{32}', parts[1]) or parts[2] != str(user_id):
         raise ValueError('Invoice belongs to another user or is malformed')
@@ -111,9 +112,9 @@ async def checkout_status(ticket, message_hash=None):
         'Checkout/status/' + quote(reference, safe=''),
         extra_headers={'X-Checkout-Assertion': engine_assertion(ticket['user_id'], reference)},
     )
-    if not isinstance(result, dict) or result.get('status') not in ('pending', 'activated'):
+    if not isinstance(result, dict) or result.get('status') not in ('pending', 'activated', 'reconciliation_required'):
         raise RuntimeError('Engine did not confirm checkout status')
-    if result['status'] == 'activated' and not result.get('paymentId'):
+    if result['status'] in ('activated', 'reconciliation_required') and not result.get('paymentId'):
         raise RuntimeError('Engine acknowledgement has no persisted payment')
     result = dict(result)
     # Chain lookup is informational only; it can NEVER cause activation.
@@ -140,4 +141,35 @@ async def checkout_status(ticket, message_hash=None):
             result['transaction_hash'] = tx_hash
         except (httpx.HTTPError, ValueError, TypeError):
             result['lookup_error'] = 'Transaction lookup unavailable; activation check remains authoritative'
+    return result
+
+
+async def prepare_ticket(ticket):
+    """Engine decides whether this is a cycle or an explicitly quoted upgrade."""
+    from services.engine_client import engine_client
+    from core.pricing import plan_to_engine
+    reference = secrets.token_hex(16)
+    result = await engine_client._post('Checkout/quote/' + reference,
+        {'plan': plan_to_engine(ticket['plan']), 'provider': 'ton' if ticket['rail'] == 'ton' else 'telegram_stars'},
+        extra_headers={'X-Checkout-Assertion': engine_assertion(ticket['user_id'], reference)})
+    if result.get('kind') == 'cycle':
+        return ticket
+    if result.get('error') == 409:
+        raise ValueError('Downgrade scheduling is not available yet. No payment requested.')
+    if result.get('kind') != 'upgrade' or result.get('reference') != reference:
+        raise RuntimeError('Could not obtain an authoritative payment quote')
+    extra = {k: v for k, v in ticket.items() if k not in ('token', 'reference', 'expires', 'plan', 'rail', 'user_id')}
+    extra.update(kind='upgrade', quote_reference=reference, expected_units=int(result['expectedUnits']),
+                 subscription_expiry=result['expiry'], valid_until=int(result['validUntil']))
+    if ticket['rail'] == 'ton':
+        extra.update(amount=str(result['expectedUnits']), memo=f"TGU1-{ticket['user_id']}-{ticket['plan']}-{reference}")
+    return issue_ticket(ticket['user_id'], ticket['plan'], ticket['rail'], reference, **extra)
+
+
+async def validate_upgrade(user_id, reference):
+    from services.engine_client import engine_client
+    result = await engine_client._get('Checkout/validate/' + quote(reference, safe=''),
+        extra_headers={'X-Checkout-Assertion': engine_assertion(user_id, reference)})
+    if not result or result.get('kind') != 'upgrade':
+        raise ValueError('Quote expired or subscription changed. Request a new quote before paying.')
     return result

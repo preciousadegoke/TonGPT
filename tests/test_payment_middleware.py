@@ -115,3 +115,24 @@ async def test_regular_message_is_still_throttled(payment_dispatcher):
     assert await queue.pending_count() == 0
     reply.assert_awaited_once()
     assert "Rate limit exceeded" in reply.call_args.args[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('amount', [1332, 1333, 1334])
+@pytest.mark.parametrize('outcome', ['held', 'queued'])
+async def test_upgrade_receipt_is_never_dropped_by_cycle_price_or_quota(payment_dispatcher, amount, outcome):
+    dispatcher, engine, limiter, queue, reply = payment_dispatcher
+    engine.complete_payment.return_value = ({'ok': False, 'held': True, 'payment_id': 'held-1'}
+                                          if outcome == 'held' else {'ok': False, 'permanent': False})
+    reference = 'a' * 32
+    await send_message(dispatcher, successful_payment={
+        'currency': 'XTR', 'total_amount': amount, 'invoice_payload': f'upgrade_pro|{reference}|1001',
+        'telegram_payment_charge_id': 'upgrade-charge', 'provider_payment_charge_id': '',
+    })
+    forwarded = engine.complete_payment.call_args.kwargs
+    assert forwarded['paid_units'] == amount and forwarded['amount_stars'] == amount
+    assert forwarded['quote_reference'] == reference and forwarded['duration_days'] == 0
+    assert forwarded['paid_at'] and forwarded['external_id'] == 'upgrade-charge'
+    limiter.check_rate_limit.assert_not_awaited()
+    assert await queue.pending_count() == (1 if outcome == 'queued' else 0)
+    if outcome == 'held': assert 'reconciliation' in reply.call_args.args[0].lower()

@@ -38,3 +38,16 @@ it('targets correlated Stars invoice creation and shared status polling after pa
   expect(mocks.post).toHaveBeenCalledWith('/checkout/status', { token: 'signed-stars' });
   expect(checkoutMachine.state?.phase).toBe('pending');
 });
+
+it('revalidates the signed upgrade ticket before opening the quoted invoice', async () => {
+  mocks.post.mockImplementation(async path => path === '/checkout/stars' ? {
+    token: 'upgrade-ticket', reference: 'a'.repeat(32), plan: 'pro', rail: 'stars', kind: 'upgrade',
+    expected_units: 1333, subscription_expiry: '2030-01-01T00:00:00Z', invoice_url: 'https://t.me/$upgrade',
+  } : { valid: true });
+  const { checkoutMachine } = await import('../src/lib/payments');
+  await checkoutMachine.start('pro', 'stars');
+  expect(mocks.invoice).not.toHaveBeenCalled();
+  await checkoutMachine.confirmUpgrade();
+  expect(mocks.post).toHaveBeenCalledWith('/checkout/validate', { token: 'upgrade-ticket' });
+  expect(mocks.invoice).toHaveBeenCalledTimes(1);
+});

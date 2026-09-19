@@ -17,6 +17,7 @@ export const checkoutMachine = new CheckoutMachine({
   account: () => getTonConnect().account,
   quoteTon: (plan, sender) => api.post('/checkout/ton', { plan, sender }),
   quoteStars: (plan) => api.post('/checkout/stars', { plan }),
+  validateQuote: (ticket) => api.post('/checkout/validate', { token: ticket.token }),
   sendTransaction: (request) => getTonConnect().sendTransaction(request),
   openInvoice: tg?.openInvoice?.bind(tg),
   status: (ticket, messageHash) => api.post('/checkout/status', {

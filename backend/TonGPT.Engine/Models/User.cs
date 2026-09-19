@@ -30,6 +30,7 @@ namespace TonGPT.Engine.Models
         public SubscriptionPlan Plan { get; set; } = SubscriptionPlan.Free;
 
         public DateTime? SubscriptionExpiry { get; set; }
+        public long EntitlementVersion { get; set; }
 
         public string? ConsentVersion { get; set; }
 

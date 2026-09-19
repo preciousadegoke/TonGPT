@@ -96,6 +96,7 @@ async def _activate_with_resilience(
     charge_id: str, duration_days: int, plan_key: str,
     amount_stars: int = 0, amount_ton: float = 0.0,
     checkout_reference: str | None = None,
+    quote_reference: str | None = None, paid_units: int | None = None, paid_at: str | None = None,
 ) -> dict:
     """Activate a subscription with Postgres as the single source of truth.
 
@@ -123,6 +124,7 @@ async def _activate_with_resilience(
             amount_ton=amount_ton,
             amount_stars=amount_stars,
             **({'checkout_reference': checkout_reference} if checkout_reference else {}),
+            **({'quote_reference': quote_reference, 'paid_units': paid_units, 'paid_at': paid_at} if quote_reference else {}),
         )
     except Exception as e:
         logger.error(f"complete_payment raised for user {user_id}: {e}")
@@ -137,7 +139,10 @@ async def _activate_with_resilience(
             logger.debug(f"usage reset skipped: {e}")
         return result
 
-    if result.get("permanent"):
+    if result.get('held') and result.get('payment_id'):
+        return result
+
+    if result.get("permanent") and not quote_reference:
         logger.error(
             f"Permanent activation failure user={user_id} plan={plan_key}: "
             f"{result.get('message') or result.get('error')}"
@@ -158,6 +163,7 @@ async def _activate_with_resilience(
             "amount_stars": amount_stars,
             "amount_ton": amount_ton,
             **({'checkout_reference': checkout_reference} if checkout_reference else {}),
+            **({'quote_reference': quote_reference, 'paid_units': paid_units, 'paid_at': paid_at} if quote_reference else {}),
         })
         result["queued"] = True
     except Exception as e:
@@ -279,9 +285,27 @@ async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
     # Strip premium_ prefix if present, but validate ALL payloads
     from services.checkout import parse_invoice
     try:
-        plan_key, _ = parse_invoice(payload, pre_checkout_query.from_user.id)
-    except ValueError:
-        await pre_checkout_query.answer(ok=False, error_message="This invoice belongs to another user. Open checkout in your own account.")
+        plan_key, reference = parse_invoice(payload, pre_checkout_query.from_user.id)
+        if payload.startswith('upgrade_'):
+            from services.checkout import validate_upgrade
+            offer = await validate_upgrade(pre_checkout_query.from_user.id, reference)
+            if (pre_checkout_query.currency != 'XTR'
+                    or offer.get('provider') != 'telegram_stars'
+                    or offer.get('targetPlan') != _plan_to_engine(plan_key)
+                    or pre_checkout_query.total_amount != int(offer['expectedUnits'])):
+                raise ValueError('Invoice amount differs from quote')
+        elif plan_key in PLANS:
+            # An old full-cycle invoice cannot implicitly change an active tier.
+            # Recheck at Telegram's last pre-payment boundary, including invoices
+            # created before a renewal or upgrade changed the subscription.
+            from services.checkout import prepare_ticket, stars_ticket
+            offer = await prepare_ticket(stars_ticket(pre_checkout_query.from_user.id, plan_key))
+            if offer.get('kind') == 'upgrade':
+                raise ValueError('Open the miniapp to review the prorated upgrade')
+            if pre_checkout_query.currency != 'XTR' or pre_checkout_query.total_amount != expected_stars(plan_key):
+                raise ValueError('Invalid renewal amount')
+    except Exception:
+        await pre_checkout_query.answer(ok=False, error_message="Invoice or quote could not be validated. Reopen checkout before paying.")
         return
     if plan_key in PLANS:
         await pre_checkout_query.answer(ok=True)
@@ -304,9 +328,13 @@ async def successful_payment_handler(message: Message):
     
     try:
         raw_plan_key, checkout_reference = parse_invoice(raw_payload, user_id)
-        validated_plan = await validate_payment_amount(
-            raw_plan_key, payment.total_amount, payment.currency
-        )
+        is_upgrade = raw_payload.startswith('upgrade_')
+        if is_upgrade and payment.currency == 'XTR' and raw_plan_key in PLANS:
+            # Never discard a paid quote because it differs from a full-cycle
+            # price or the quoted amount. The Engine records and adjudicates it.
+            validated_plan = raw_plan_key
+        else:
+            validated_plan = await validate_payment_amount(raw_plan_key, payment.total_amount, payment.currency)
     except ValueError as e:
         logger.error(f"Payment validation failed for user {user_id}: {e}")
         await message.reply(
@@ -348,7 +376,7 @@ async def successful_payment_handler(message: Message):
         logger.warning(f"No telegram_payment_charge_id; using unique fallback for user {user_id}")
 
     engine_plan = _plan_to_engine(plan_key)
-    duration_days = plan.get("duration_days", 30)
+    duration_days = 0 if is_upgrade else plan.get("duration_days", 30)
     # XTR total_amount is the whole number of Stars — no // 100 (see pricing.py).
     stars_received = payment.total_amount
 
@@ -363,7 +391,13 @@ async def successful_payment_handler(message: Message):
         charge_id=charge_id, duration_days=duration_days, plan_key=plan_key,
         amount_stars=stars_received,
         checkout_reference=checkout_reference,
+        **({'quote_reference': checkout_reference, 'paid_units': stars_received, 'paid_at': message.date.isoformat()} if is_upgrade else {}),
     )
+
+    if result.get('held'):
+        await message.reply('Payment recorded for reconciliation. Your plan and expiry were not changed. Contact support with payment '
+                            + str(result.get('payment_id')) + '; do not pay again.')
+        return
 
     # Best-effort revenue metrics — must NEVER gate or fail the activation.
     try:
@@ -382,7 +416,10 @@ async def successful_payment_handler(message: Message):
                 parse_mode="HTML",
             )
         else:
-            await message.reply(_success_message(plan), parse_mode="HTML")
+            if is_upgrade:
+                await message.reply(f"Upgrade applied to {plan['name']}. Expiry unchanged: {result.get('expiry')}")
+            else:
+                await message.reply(_success_message(plan), parse_mode="HTML")
         logger.info(
             f"payment_activated user={user_id} plan={plan_key} stars={stars_received} "
             f"already={result.get('already_processed')}"

@@ -9,7 +9,7 @@ namespace TonGPT.Engine.Controllers;
 
 [ApiController]
 [Route("api/Checkout")]
-public class CheckoutController(AppDbContext db, IConfiguration config) : ControllerBase
+public partial class CheckoutController(AppDbContext db, IConfiguration config) : ControllerBase
 {
     // API-key middleware also applies. Unlike older controllers, missing signing
     // configuration NEVER falls back to API-key-only access.
@@ -36,9 +36,11 @@ public class CheckoutController(AppDbContext db, IConfiguration config) : Contro
 
         Response.Headers.CacheControl = "no-store";
         var payment = await db.Payments.AsNoTracking()
-            .Where(p => p.TelegramUserId == parts[1] && p.CheckoutReference == reference && p.Status == "Completed")
+            .Where(p => p.TelegramUserId == parts[1] && p.CheckoutReference == reference)
             .OrderByDescending(p => p.CreatedAt).FirstOrDefaultAsync();
         if (payment == null) return Ok(new { status = "pending" });
+        if (payment.Status == "ReconciliationRequired") return Ok(new { status = "reconciliation_required", paymentId = payment.Id });
+        if (payment.Status != "Completed") return Ok(new { status = "pending" });
         var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(u => u.TelegramId == parts[1]);
         var active = user != null && user.Plan != SubscriptionPlan.Free && user.SubscriptionExpiry > DateTime.UtcNow;
         return Ok(new {
