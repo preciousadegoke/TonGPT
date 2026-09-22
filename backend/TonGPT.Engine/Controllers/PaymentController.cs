@@ -195,6 +195,8 @@ namespace TonGPT.Engine.Controllers
                 var locked = await _context.Users.FromSqlInterpolated(
                     $"SELECT * FROM \"Users\" WHERE \"TelegramId\" = {request.TelegramId} FOR UPDATE")
                     .AsNoTracking().SingleAsync();
+                now = DateTime.UtcNow;
+                Services.EffectiveEntitlement.NormalizeForPayment(locked, now);
                 if (locked.Plan != SubscriptionPlan.Free && locked.SubscriptionExpiry > now && locked.Plan != plan)
                 {
                     payment.Status = "ReconciliationRequired";
@@ -209,17 +211,24 @@ namespace TonGPT.Engine.Controllers
                     return Services.UpgradePayments.Held(payment, false);
                 }
 
-                // Compute from the current database value, not the earlier
+                var renewedExpiry = (locked.SubscriptionExpiry > now ? locked.SubscriptionExpiry.Value : now).AddDays(durationDays);
+                if (locked.PendingPlan != null)
+                {
+                    locked.PendingStartsAt = locked.PendingStartsAt!.Value.AddDays(durationDays);
+                    locked.PendingExpiry = locked.PendingExpiry!.Value.AddDays(durationDays);
+                }
+                // Compute from the current locked database value, not the earlier
                 // tracked read. PostgreSQL serializes updates to this user so
                 // concurrent distinct payments each add their full duration.
                 var updated = await _context.Users
                     .Where(u => u.TelegramId == request.TelegramId)
                     .ExecuteUpdateAsync(setters => setters
                         .SetProperty(u => u.Plan, plan)
+                        .SetProperty(u => u.PendingPlan, locked.PendingPlan)
+                        .SetProperty(u => u.PendingStartsAt, locked.PendingStartsAt)
+                        .SetProperty(u => u.PendingExpiry, locked.PendingExpiry)
                         .SetProperty(u => u.EntitlementVersion, u => u.EntitlementVersion + 1)
-                        .SetProperty(u => u.SubscriptionExpiry, u =>
-                            (u.SubscriptionExpiry.HasValue && u.SubscriptionExpiry.Value > now
-                                ? u.SubscriptionExpiry.Value : now).AddDays(durationDays)));
+                        .SetProperty(u => u.SubscriptionExpiry, renewedExpiry));
                 if (updated != 1)
                     throw new DbUpdateException("Payment activation requires exactly one user update.");
 

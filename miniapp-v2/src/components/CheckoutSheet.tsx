@@ -46,7 +46,7 @@ export function CheckoutSheet({ plan, onClose }: Props) {
   if (!plan) return null;
   const shownAttempt = attempt && (busy || attempt.plan === plan.id) ? attempt : null;
   const shownPlan = busy ? PLANS.find((p) => p.id === attempt!.plan) || plan : plan;
-  const upgrade = shownAttempt?.ticket?.kind === 'upgrade' ? shownAttempt.ticket : null;
+  const upgrade = shownAttempt?.ticket?.kind ? shownAttempt.ticket : null;
   const upgradePrice = upgrade ? (shownAttempt!.rail === 'ton' ? `${Number(upgrade.amount) / 1e9} TON` : fmtStars(upgrade.expected_units!)) : '';
   const close = () => {
     generation.current++;
@@ -67,6 +67,12 @@ export function CheckoutSheet({ plan, onClose }: Props) {
     await checkoutMachine.start(plan.id, rail);
   };
 
+  if (shownAttempt?.phase === 'scheduled') return (
+    <Sheet open onClose={close} title="Downgrade scheduled">
+      <p role="status">{shownAttempt.message}</p>
+      <button class="btn-primary w-full mt-4" onClick={close}>Done</button>
+    </Sheet>
+  );
   if (shownAttempt?.phase === 'paid') return (
     <Sheet open onClose={close} title="Activation confirmed">
       <div class="text-center py-7">
@@ -86,13 +92,13 @@ export function CheckoutSheet({ plan, onClose }: Props) {
       </fieldset>
       <p class="text-hint text-xs mb-3">{configMessage}</p>
       <div class="card-raised p-4 mb-3 flex justify-between">
-        <span>{shownPlan.name} · {upgrade ? 'Prorated upgrade' : '30 days'}</span>
+        <span>{shownPlan.name} · {upgrade?.kind === 'downgrade' ? 'Prepaid downgrade · 30 days' : upgrade ? 'Prorated upgrade' : '30 days'}</span>
         <strong>{upgrade ? upgradePrice : (busy ? attempt!.rail : rail) === 'ton'
           ? `${shownPlan.priceTon} TON` : fmtStars(shownPlan.priceStars)}</strong>
       </div>
       {shownAttempt && (
         <div role="status" class="card-raised p-4 mb-3">
-          <p class="font-semibold">{shownAttempt.phase === 'review' ? 'Review upgrade quote' : shownAttempt.phase === 'held' ? 'Payment held for review' : busy ? 'Awaiting confirmation' : 'Checkout not completed'}</p>
+          <p class="font-semibold">{shownAttempt.phase === 'review' ? 'Review tier-change quote' : shownAttempt.phase === 'held' ? 'Payment held for review' : busy ? 'Awaiting confirmation' : 'Checkout not completed'}</p>
           <p class="text-hint text-sm mt-2">{shownAttempt.message}</p>
           {shownAttempt.ticket?.reference && <p class="text-xs break-all mt-2">Reference: {shownAttempt.ticket.reference}</p>}
           {shownAttempt.transactionHash && <p class="text-xs break-all mt-2">Transaction: {shownAttempt.transactionHash}</p>}
@@ -109,7 +115,7 @@ export function CheckoutSheet({ plan, onClose }: Props) {
       )}
       {localError && <p role="alert" class="text-negative text-sm mb-3">{localError}</p>}
       <button class="btn-primary w-full" onClick={pay} disabled={(busy && shownAttempt?.phase !== 'review') || (rail === 'ton' && !tonEnabled)}>
-        {shownAttempt?.phase === 'review' ? `Confirm upgrade: ${upgradePrice}` : busy ? 'Confirmation pending…' : rail === 'ton' && !isWalletConnected.value ? 'Connect wallet to pay'
+        {shownAttempt?.phase === 'review' ? `Confirm ${upgrade?.kind}: ${upgradePrice}` : busy ? 'Confirmation pending…' : rail === 'ton' && !isWalletConnected.value ? 'Connect wallet to pay'
           : rail === 'ton' ? `Pay ${plan.priceTon} TON` : `Pay ${fmtStars(plan.priceStars)}`}
       </button>
     </Sheet>

@@ -42,10 +42,16 @@ public partial class CheckoutController(AppDbContext db, IConfiguration config) 
         if (payment.Status == "ReconciliationRequired") return Ok(new { status = "reconciliation_required", paymentId = payment.Id });
         if (payment.Status != "Completed") return Ok(new { status = "pending" });
         var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(u => u.TelegramId == parts[1]);
-        var active = user != null && user.Plan != SubscriptionPlan.Free && user.SubscriptionExpiry > DateTime.UtcNow;
+        var quote = await db.UpgradeQuotes.AsNoTracking().SingleOrDefaultAsync(q => q.AppliedPaymentId == payment.Id);
+        if (quote?.Kind == "downgrade") return Ok(new {
+            status = "scheduled", paymentId = payment.Id, scheduledPlan = payment.Plan,
+            scheduledStart = user?.PendingStartsAt, scheduledExpiry = user?.PendingExpiry,
+        });
+        var effective = Services.EffectiveEntitlement.Resolve(user, DateTime.UtcNow);
+        var active = effective.Plan != SubscriptionPlan.Free;
         return Ok(new {
             status = "activated", paymentId = payment.Id,
-            plan = active ? user!.Plan.ToString() : "Free", expiry = user?.SubscriptionExpiry,
+            plan = effective.Plan.ToString(), expiry = effective.Expiry,
             entitlementActive = active,
         });
     }

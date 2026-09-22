@@ -15,6 +15,10 @@ public class UpgradeQuote
     public DateTime CreatedAt { get; set; }
     public DateTime ValidUntil { get; set; }
     public Guid? AppliedPaymentId { get; set; }
+    public string Kind { get; set; } = "upgrade";
+    public SubscriptionPlan? PendingPlan { get; set; }
+    public DateTime? PendingStartsAt { get; set; }
+    public DateTime? PendingExpiry { get; set; }
 }
 
 // An immutable receipt for a payment whose entitlement application was rejected.

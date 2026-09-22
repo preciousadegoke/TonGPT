@@ -19,6 +19,8 @@ public class UpgradePayments(AppDbContext db, ILogger logger)
             return new ConflictObjectResult(new { message = "Payment identifier conflict." });
         if (payment.Status == "ReconciliationRequired") return Held(payment, true);
         var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(u => u.TelegramId == userId);
+        var quote = await db.UpgradeQuotes.AsNoTracking().SingleOrDefaultAsync(q => q.AppliedPaymentId == payment.Id);
+        if (quote?.Kind == "downgrade") return Scheduled(payment, user, true);
         return new OkObjectResult(new { status = "AlreadyProcessed", alreadyProcessed = true, paymentId = payment.Id,
             plan = user?.Plan.ToString(), expiry = user?.SubscriptionExpiry });
     }
@@ -43,6 +45,7 @@ public class UpgradePayments(AppDbContext db, ILogger logger)
             var quote = await db.UpgradeQuotes.FromSqlInterpolated(
                 $"SELECT * FROM \"UpgradeQuotes\" WHERE \"Reference\" = {request.QuoteReference} FOR UPDATE").SingleOrDefaultAsync();
             var ownQuote = quote != null && quote.TelegramId == request.TelegramId;
+            var now = DateTime.UtcNow;
             var reason = !ownQuote ? "QuoteUnavailable"
                 : provider != quote!.Provider ? "CurrencyMismatch"
                 : request.PaidUnits != quote.ExpectedUnits ? "AmountMismatch"
@@ -51,8 +54,7 @@ public class UpgradePayments(AppDbContext db, ILogger logger)
                 : request.PaidAt == null ? "MissingPaymentTimestamp"
                 : request.PaidAt < quote.CreatedAt || request.PaidAt > quote.ValidUntil || request.PaidAt > DateTime.UtcNow.AddMinutes(1) ? "PaymentOutsideQuoteWindow"
                 : quote.AppliedPaymentId != null ? "QuoteAlreadyApplied"
-                : user == null || user.Plan != quote.FromPlan || user.SubscriptionExpiry != quote.SubscriptionExpiry
-                    || user.EntitlementVersion != quote.EntitlementVersion ? "EntitlementChanged"
+                : !EffectiveEntitlement.Matches(user, quote, now) ? "EntitlementChanged"
                 : null;
             var payment = new Payment {
                 Id = Guid.NewGuid(), TelegramUserId = request.TelegramId, ExternalId = request.ExternalId,
@@ -70,13 +72,15 @@ public class UpgradePayments(AppDbContext db, ILogger logger)
                 });
             else
             {
-                user!.Plan = quote!.TargetPlan;
-                user.EntitlementVersion++;
+                EffectiveEntitlement.NormalizeForPayment(user!, now);
+                if (quote!.Kind == "downgrade") EffectiveEntitlement.Schedule(user!, quote.TargetPlan, now);
+                else user!.Plan = quote.TargetPlan;
+                user!.EntitlementVersion++;
                 // Delayed notification does not change the already quoted expiry.
                 quote.AppliedPaymentId = payment.Id;
             }
             db.ActivityLogs.Add(new ActivityLog {
-                TelegramId = request.TelegramId, Action = reason == null ? "payment_completed" : "payment_held",
+                TelegramId = request.TelegramId, Action = reason == null ? (quote!.Kind == "downgrade" ? "payment_scheduled" : "payment_completed") : "payment_held",
                 Success = reason == null, Timestamp = DateTime.UtcNow,
                 Metadata = System.Text.Json.JsonSerializer.Serialize(new { payment.Id, request.QuoteReference, reason }),
             });
@@ -86,6 +90,11 @@ public class UpgradePayments(AppDbContext db, ILogger logger)
             {
                 logger.LogWarning("upgrade_payment_held payment={PaymentId} reason={Reason}", payment.Id, reason);
                 return Held(payment, false);
+            }
+            if (quote!.Kind == "downgrade")
+            {
+                logger.LogInformation("downgrade_payment_scheduled payment={PaymentId} start={Start} expiry={Expiry}", payment.Id, user!.PendingStartsAt, user.PendingExpiry);
+                return Scheduled(payment, user, false);
             }
             logger.LogInformation("upgrade_payment_activated payment={PaymentId} expiry={Expiry}", payment.Id, user!.SubscriptionExpiry);
             return new OkObjectResult(new { status = "Activated", alreadyProcessed = false, paymentId = payment.Id,
@@ -100,4 +109,10 @@ public class UpgradePayments(AppDbContext db, ILogger logger)
             return new ObjectResult(new { status = "RetryableFailure", retryable = true }) { StatusCode = 503 };
         }
     }
+
+    public static IActionResult Scheduled(Payment payment, User? user, bool already) => new OkObjectResult(new {
+        status = "Scheduled", alreadyProcessed = already, paymentId = payment.Id,
+        scheduledPlan = payment.Plan, scheduledStart = user?.PendingStartsAt, scheduledExpiry = user?.PendingExpiry,
+        message = "Prepaid downgrade recorded. Current paid coverage is preserved.",
+    });
 }

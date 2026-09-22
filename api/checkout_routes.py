@@ -65,7 +65,8 @@ def install_checkout_routes(app, verify_init_data):
         plan = PLANS[body.plan]
         try:
             url = await bot.create_invoice_link(
-                title=f"TonGPT {plan['name']}", description=(f"Prorated upgrade; expiry remains {ticket['subscription_expiry']}"
+                title=f"TonGPT {plan['name']}", description=(f"Prepaid 30-day downgrade. Starts {ticket['scheduled_start']}. No self-service cancellation/refund."
+                    if ticket.get('kind') == 'downgrade' else f"Prorated upgrade; expiry remains {ticket['subscription_expiry']}"
                     if ticket.get('kind') == 'upgrade' else f"{plan['name']} (30 days)."),
                 payload=checkout.invoice_payload(ticket), provider_token='', currency='XTR',
                 prices=[LabeledPrice(label=plan['name'], amount=ticket.get('expected_units', plan['price_stars']))],
@@ -81,8 +82,8 @@ def install_checkout_routes(app, verify_init_data):
         user_id = authenticate(request, response)
         try:
             ticket = checkout.read_ticket(body.token, user_id)
-            if ticket.get('kind') != 'upgrade':
-                raise ValueError('Not an upgrade quote')
+            if ticket.get('kind') not in ('upgrade', 'downgrade'):
+                raise ValueError('Not a tier-change quote')
             await checkout.validate_upgrade(user_id, ticket['quote_reference'])
             return {'valid': True}
         except ValueError as exc:

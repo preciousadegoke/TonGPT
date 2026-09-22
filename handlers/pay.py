@@ -130,6 +130,8 @@ async def _activate_with_resilience(
         logger.error(f"complete_payment raised for user {user_id}: {e}")
         result = {"ok": False, "permanent": False, "error": str(e)}
 
+    if result.get('scheduled') and result.get('payment_id'):
+        return result
     if result.get("ok"):
         # Reset the daily usage counter (best-effort; not a source of truth).
         try:
@@ -286,7 +288,7 @@ async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
     from services.checkout import parse_invoice
     try:
         plan_key, reference = parse_invoice(payload, pre_checkout_query.from_user.id)
-        if payload.startswith('upgrade_'):
+        if payload.startswith(('upgrade_', 'downgrade_')):
             from services.checkout import validate_upgrade
             offer = await validate_upgrade(pre_checkout_query.from_user.id, reference)
             if (pre_checkout_query.currency != 'XTR'
@@ -300,8 +302,8 @@ async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
             # created before a renewal or upgrade changed the subscription.
             from services.checkout import prepare_ticket, stars_ticket
             offer = await prepare_ticket(stars_ticket(pre_checkout_query.from_user.id, plan_key))
-            if offer.get('kind') == 'upgrade':
-                raise ValueError('Open the miniapp to review the prorated upgrade')
+            if offer.get('kind') in ('upgrade', 'downgrade'):
+                raise ValueError('Open the miniapp to review the tier change')
             if pre_checkout_query.currency != 'XTR' or pre_checkout_query.total_amount != expected_stars(plan_key):
                 raise ValueError('Invalid renewal amount')
     except Exception:
@@ -328,7 +330,7 @@ async def successful_payment_handler(message: Message):
     
     try:
         raw_plan_key, checkout_reference = parse_invoice(raw_payload, user_id)
-        is_upgrade = raw_payload.startswith('upgrade_')
+        is_upgrade = raw_payload.startswith(('upgrade_', 'downgrade_'))
         if is_upgrade and payment.currency == 'XTR' and raw_plan_key in PLANS:
             # Never discard a paid quote because it differs from a full-cycle
             # price or the quoted amount. The Engine records and adjudicates it.
@@ -394,6 +396,10 @@ async def successful_payment_handler(message: Message):
         **({'quote_reference': checkout_reference, 'paid_units': stars_received, 'paid_at': message.date.isoformat()} if is_upgrade else {}),
     )
 
+    if result.get('scheduled'):
+        await message.reply('Prepaid downgrade recorded. Current paid coverage is preserved. '
+                            'Check the miniapp for the schedule; contact support for exceptions.')
+        return
     if result.get('held'):
         await message.reply('Payment recorded for reconciliation. Your plan and expiry were not changed. Contact support with payment '
                             + str(result.get('payment_id')) + '; do not pay again.')

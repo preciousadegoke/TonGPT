@@ -2,19 +2,21 @@ import { commentBoc, normalizedMessageHash } from './ton-checkout';
 import { Address } from '@ton/core';
 
 export type Rail = 'ton' | 'stars';
-export type Phase = 'preparing' | 'review' | 'wallet' | 'invoice' | 'pending' | 'held' | 'paid' | 'cancelled' | 'error';
+export type Phase = 'preparing' | 'review' | 'wallet' | 'invoice' | 'pending' | 'held' | 'paid' | 'scheduled' | 'cancelled' | 'error';
 export interface Ticket {
   reference: string; token: string; plan: string; rail: Rail;
   network?: 'mainnet' | 'testnet'; address?: string; sender?: string;
   amount?: string; memo?: string; valid_until?: number; invoice_url?: string;
-  kind?: 'upgrade'; expected_units?: number; subscription_expiry?: string;
+  kind?: 'upgrade' | 'downgrade'; expected_units?: number; subscription_expiry?: string;
+  scheduled_start?: string; scheduled_expiry?: string;
 }
 export interface Attempt {
   id: number; plan: string; rail: Rail; phase: Phase; message: string;
   ticket?: Ticket; messageHash?: string; transactionHash?: string; invoicePaid?: boolean;
 }
 export interface Activation {
-  status: 'pending' | 'activated' | 'reconciliation_required'; paymentId?: string; entitlementActive?: boolean;
+  status: 'pending' | 'activated' | 'scheduled' | 'reconciliation_required'; paymentId?: string; entitlementActive?: boolean;
+  scheduledPlan?: string; scheduledStart?: string; scheduledExpiry?: string;
   plan?: string; expiry?: string; transaction_hash?: string; lookup_error?: string;
 }
 export interface Dependencies {
@@ -61,10 +63,10 @@ export class CheckoutMachine {
     this.deps.changed(this.state);
   }
   private update(id: number, patch: Partial<Attempt>) {
-    if (this.state?.id !== id || this.state.phase === 'paid') return false;
+    if (this.state?.id !== id || ['paid', 'scheduled'].includes(this.state.phase)) return false;
     // A late wallet/invoice callback must never turn a durable hold into a
     // cancellation or an invitation to pay again. Only reconciliation may resolve it.
-    if (this.state.phase === 'held' && patch.phase && !['held', 'paid'].includes(patch.phase)) return false;
+    if (this.state.phase === 'held' && patch.phase && !['held', 'paid', 'scheduled'].includes(patch.phase)) return false;
     this.state = { ...this.state, ...patch };
     this.deps.changed(this.state);
     return true;
@@ -100,8 +102,8 @@ export class CheckoutMachine {
         const ticket = approvedTicket || await this.deps.quoteStars(plan);
         if (!ticket.invoice_url || !ticket.token) throw new Error('No invoice was created. Try again.');
         if (!this.update(id, { ticket })) return;
-        if (ticket.kind === 'upgrade' && !approvedTicket) {
-          this.update(id, { phase: 'review', message: `Review the prorated upgrade. Expiry stays ${ticket.subscription_expiry}.` });
+        if (ticket.kind && !approvedTicket) {
+          this.update(id, { phase: 'review', message: this.reviewMessage(ticket) });
           return;
         }
         this.openStars(id, ticket);
@@ -118,8 +120,8 @@ export class CheckoutMachine {
       if (!ticket.address || !ticket.amount || !ticket.memo || !ticket.valid_until || !ticket.token)
         throw new Error('Backend returned an incomplete payment quote.');
       const payload = commentBoc(ticket.memo);
-      if (ticket.kind === 'upgrade' && !approvedTicket) {
-        this.update(id, { ticket, phase: 'review', message: `Review the prorated upgrade. Expiry stays ${ticket.subscription_expiry}.` });
+      if (ticket.kind && !approvedTicket) {
+        this.update(id, { ticket, phase: 'review', message: this.reviewMessage(ticket) });
         return;
       }
       if (!this.update(id, { ticket, phase: 'wallet', message: `Approve the ${ticket.network} transfer in your wallet.` })) return;
@@ -149,7 +151,7 @@ export class CheckoutMachine {
     let handled = false;
     try {
       this.deps.openInvoice!(ticket.invoice_url!, (status) => {
-        if (handled || this.state?.id !== id || this.state.phase === 'paid') return;
+        if (handled || this.state?.id !== id || ['paid', 'scheduled'].includes(this.state.phase)) return;
         handled = true;
         clearTimeout(this.timer);
         if (status === 'cancelled' || status === 'failed') {
@@ -178,7 +180,10 @@ export class CheckoutMachine {
     try {
       const result = await this.deps.status(attempt.ticket, attempt.messageHash);
       if (this.state?.id !== id || !isPending(this.state)) return;
-      if (result.status === 'reconciliation_required' && result.paymentId) {
+      if (result.status === 'scheduled' && result.paymentId) {
+        this.clearTimers();
+        this.update(id, { phase: 'scheduled', message: `Prepaid downgrade recorded.${result.scheduledStart ? ` Lower-tier coverage starts ${result.scheduledStart} and ends ${result.scheduledExpiry}.` : ''} Current paid coverage is preserved.` });
+      } else if (result.status === 'reconciliation_required' && result.paymentId) {
         this.clearTimers();
         this.update(id, { phase: 'held', message: `Payment ${result.paymentId} is held for reconciliation. Your plan and expiry were not changed. Contact support; do not pay again.` });
       } else if (result.status === 'activated' && result.paymentId && result.entitlementActive && result.expiry && Date.parse(result.expiry) > Date.now()) {
@@ -198,5 +203,10 @@ export class CheckoutMachine {
       if (this.state?.id === id && this.state.phase === 'pending' && Date.now() < this.pollUntil)
         this.pollTimer = setTimeout(() => void this.check(), 5000);
     }
+  }
+  private reviewMessage(ticket: Ticket) {
+    return ticket.kind === 'downgrade'
+      ? `Prepay 30 days at the lower tier. Scheduled coverage: ${ticket.scheduled_start} to ${ticket.scheduled_expiry}. Current tier and expiry stay unchanged. No self-service cancellation or refund; contact support for exceptions.`
+      : `Review the prorated upgrade. Expiry stays ${ticket.subscription_expiry}.`;
   }
 }

@@ -88,10 +88,11 @@ async def test_http_503_retries_and_queue_recovery(monkeypatch, tmp_path, provid
 
 @pytest.mark.parametrize('provider', ['ton', 'telegram_stars'])
 @pytest.mark.parametrize('proof', [True, False])
-async def test_upgrade_hold_requires_durable_proof_and_preserves_integer_units(provider, proof):
+@pytest.mark.parametrize('status', ['ReconciliationRequired', 'Scheduled'])
+async def test_upgrade_hold_requires_durable_proof_and_preserves_integer_units(provider, proof, status):
     module = load_source('upgrade_receipt_client', 'services/engine_client.py')
     client = module.EngineClient(base_url='http://unused.invalid/api')
-    client._post = AsyncMock(return_value={'status': 'ReconciliationRequired', 'paymentId': 'held-1' if proof else None, 'alreadyProcessed': True})
+    client._post = AsyncMock(return_value={'status': status, 'paymentId': 'held-1' if proof else None, 'alreadyProcessed': True})
     units = 9007199254740993  # catches accidental float conversion beyond 2**53
     result = await client.complete_payment(telegram_id=777, plan='Pro', provider=provider,
         external_id='charge', duration_days=0, quote_reference='a' * 32,
@@ -100,6 +101,6 @@ async def test_upgrade_hold_requires_durable_proof_and_preserves_integer_units(p
     assert body['paidUnits'] == units and type(body['paidUnits']) is int
     assert body['durationDays'] == 0 and body['quoteReference'] == 'a' * 32
     assert body['paidAt'] == '2026-09-19T12:00:00Z'
-    assert result['ok'] is False and result['permanent'] is False
-    assert bool(result.get('held')) is proof
+    assert result['ok'] is (proof and status == 'Scheduled') and result['permanent'] is False
+    assert bool(result.get('held' if status == 'ReconciliationRequired' else 'scheduled')) is proof
     assert bool(result.get('payment_id')) is proof

@@ -190,7 +190,9 @@ async def drain_once() -> int:
             res = {"ok": False, "error": str(e), "permanent": False}
 
         if res.get("ok"):
-            activated += 1
+            if not res.get('scheduled'):
+                activated += 1
+            it['scheduled'] = bool(res.get('scheduled'))
             log.info(
                 "activation_reconciled",
                 user_id=it["user_id"], plan=it["plan"], external_id=it["external_id"],
@@ -267,6 +269,9 @@ async def _notify_user(item: Dict[str, Any]) -> None:
         if not bot:
             return
         plan_label = (item.get("plan_key") or item.get("plan") or "premium").replace("_", " ").title()
+        if item.get('scheduled'):
+            await bot.send_message(item['user_id'], f"Your prepaid {plan_label} downgrade is recorded. Current paid coverage is preserved. Check the miniapp for the schedule.")
+            return
         await bot.send_message(
             item["user_id"],
             f"✅ <b>Your {plan_label} is now active!</b>\n\n"

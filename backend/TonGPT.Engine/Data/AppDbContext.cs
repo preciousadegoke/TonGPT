@@ -17,6 +17,7 @@ namespace TonGPT.Engine.Data
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
+            modelBuilder.Entity<UpgradeQuote>().Property(q => q.Kind).HasDefaultValue("upgrade");
             modelBuilder.Entity<PaymentReconciliation>().Property(p => p.ActualUnits).HasPrecision(28, 9);
             
             modelBuilder.Entity<User>()

@@ -16,7 +16,7 @@ using TonGPT.Engine.Models;
 using TonGPT.Engine.Services;
 using static TonGPT.Engine.Controllers.PaymentController;
 
-sealed class UpgradeTests(Func<IInterceptor[], AppDbContext> context)
+sealed partial class UpgradeTests(Func<IInterceptor[], AppDbContext> context)
 {
     const string Secret = "isolated-upgrade-test-secret";
     static long nextUser = 800000;
@@ -49,7 +49,7 @@ sealed class UpgradeTests(Func<IInterceptor[], AppDbContext> context)
         db.Users.Add(new User { TelegramId = user, Plan = from, SubscriptionExpiry = now + (remaining ?? TimeSpan.FromDays(15)) });
         await db.SaveChangesAsync();
         var response = Reply(await Controller(db, user, reference).Quote(reference, new(to.ToString(), provider)));
-        Check(response.Code == 200 && response.Body.GetProperty("kind").GetString() == "upgrade", "Quote endpoint did not issue an upgrade");
+        Check(response.Code == 200 && response.Body.GetProperty("kind").GetString() == (to < from ? "downgrade" : "upgrade"), "Quote endpoint did not issue the tier-change quote");
         return await db.UpgradeQuotes.AsNoTracking().SingleAsync(q => q.Reference == reference);
     }
     static CompletePaymentRequest Receipt(UpgradeQuote q) => new() {
@@ -319,6 +319,7 @@ sealed class UpgradeTests(Func<IInterceptor[], AppDbContext> context)
             yield return ($"{rail}: upgrade versus cross-rail renewal", () => RenewalRace(rail));
             yield return ($"{rail}: currency/plan/duration/state binding", () => ReceiptBinding(rail));
         }
+        foreach (var test in DowngradeCases()) yield return test;
     }
 }
 

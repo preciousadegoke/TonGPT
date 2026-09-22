@@ -280,6 +280,12 @@ class EngineClient:
                 result = {"error": "exception", "message": str(e)}
 
             if "error" not in result:
+                if result.get('status') == 'Scheduled':
+                    if not result.get('paymentId'):
+                        return {'ok': False, 'permanent': False, 'error': 'Unconfirmed scheduled receipt'}
+                    return {'ok': True, 'scheduled': True, 'permanent': False,
+                            'payment_id': str(result['paymentId']), 'already_processed': bool(result.get('alreadyProcessed')),
+                            'scheduled_start': result.get('scheduledStart'), 'scheduled_expiry': result.get('scheduledExpiry')}
                 if result.get('status') == 'ReconciliationRequired':
                     if not result.get('paymentId'):
                         return {'ok': False, 'permanent': False, 'error': 'Unconfirmed reconciliation receipt'}

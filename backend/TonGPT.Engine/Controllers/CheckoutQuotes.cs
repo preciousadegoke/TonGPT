@@ -30,9 +30,11 @@ public partial class CheckoutController
     }
 
     private static object QuoteBody(UpgradeQuote quote) => new {
-        kind = "upgrade", reference = quote.Reference, expectedUnits = quote.ExpectedUnits.ToString(),
+        kind = quote.Kind, reference = quote.Reference, expectedUnits = quote.ExpectedUnits.ToString(),
         expiry = quote.SubscriptionExpiry, validUntil = new DateTimeOffset(quote.ValidUntil).ToUnixTimeSeconds(),
         fromPlan = quote.FromPlan.ToString(), targetPlan = quote.TargetPlan.ToString(), provider = quote.Provider,
+        scheduledStart = quote.Kind == "downgrade" ? quote.SubscriptionExpiry : (DateTime?)null,
+        scheduledExpiry = quote.Kind == "downgrade" ? (quote.PendingStartsAt > quote.CreatedAt ? quote.PendingExpiry ?? quote.SubscriptionExpiry : quote.SubscriptionExpiry).AddDays(UpgradePricing.CycleDays) : (DateTime?)null,
     };
 
     [HttpPost("quote/{reference}")]
@@ -45,9 +47,11 @@ public partial class CheckoutController
         var target = Enum.Parse<SubscriptionPlan>(name);
         var now = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds()).UtcDateTime;
         var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(u => u.TelegramId == auth.User);
-        var active = user != null && user.Plan != SubscriptionPlan.Free && user.SubscriptionExpiry > now;
-        if (!active || user!.Plan == target) return Ok(new { kind = "cycle" });
-        if (target < user.Plan) return Conflict(new { message = "Downgrade scheduling is not available in this step. No payment requested." });
+        var effective = EffectiveEntitlement.Resolve(user, now);
+        if (effective.Plan == SubscriptionPlan.Free || effective.Plan == target) return Ok(new { kind = "cycle" });
+        var downgrade = target < effective.Plan;
+        if (downgrade && effective.PendingPlan != null && effective.PendingPlan != target)
+            return Conflict(new { message = "A different prepaid downgrade already exists. Contact support; no payment requested." });
         var existing = await db.UpgradeQuotes.AsNoTracking().SingleOrDefaultAsync(q => q.Reference == reference);
         if (existing != null)
         {
@@ -56,11 +60,14 @@ public partial class CheckoutController
             return Ok(QuoteBody(existing));
         }
         var quote = new UpgradeQuote {
-            Reference = reference, TelegramId = auth.User!, FromPlan = user.Plan, TargetPlan = target,
-            SubscriptionExpiry = user.SubscriptionExpiry!.Value, EntitlementVersion = user.EntitlementVersion,
+            Reference = reference, TelegramId = auth.User!, FromPlan = effective.Plan, TargetPlan = target,
+            SubscriptionExpiry = effective.Expiry!.Value, EntitlementVersion = user!.EntitlementVersion,
+            Kind = downgrade ? "downgrade" : "upgrade", PendingPlan = user.PendingPlan,
+            PendingStartsAt = user.PendingStartsAt, PendingExpiry = user.PendingExpiry,
             Provider = request.Provider, CreatedAt = now,
-            ValidUntil = user.SubscriptionExpiry.Value < now.AddMinutes(5) ? user.SubscriptionExpiry.Value : now.AddMinutes(5),
-            ExpectedUnits = UpgradePricing.Units(user.Plan, target, request.Provider, user.SubscriptionExpiry.Value - now),
+            ValidUntil = effective.Expiry.Value < now.AddMinutes(5) ? effective.Expiry.Value : now.AddMinutes(5),
+            ExpectedUnits = downgrade ? CyclePrice(target, request.Provider)
+                : UpgradePricing.Units(effective.Plan, target, request.Provider, effective.Expiry.Value - now),
         };
         db.UpgradeQuotes.Add(quote);
         await db.SaveChangesAsync();
@@ -75,9 +82,15 @@ public partial class CheckoutController
         var quote = await db.UpgradeQuotes.AsNoTracking().SingleOrDefaultAsync(q => q.Reference == reference && q.TelegramId == auth.User);
         if (quote == null) return NotFound();
         var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(u => u.TelegramId == auth.User);
-        if (quote.ValidUntil <= DateTime.UtcNow || quote.AppliedPaymentId != null || user == null
-            || user.Plan != quote.FromPlan || user.SubscriptionExpiry != quote.SubscriptionExpiry || user.EntitlementVersion != quote.EntitlementVersion)
+        if (quote.ValidUntil <= DateTime.UtcNow || quote.AppliedPaymentId != null
+            || !EffectiveEntitlement.Matches(user, quote, DateTime.UtcNow))
             return Conflict(new { message = "Quote expired or subscription changed. Request a new quote before paying." });
         return Ok(QuoteBody(quote));
+    }
+
+    private static long CyclePrice(SubscriptionPlan plan, string provider)
+    {
+        if (!Pricing.TryGet(plan, out var price)) throw new InvalidOperationException("Missing cycle price");
+        return provider == "ton" ? checked((long)(price.Ton * 1_000_000_000m)) : price.Stars;
     }
 }

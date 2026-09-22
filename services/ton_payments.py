@@ -147,7 +147,7 @@ def parse_memo(text: Optional[str]) -> Optional[Dict[str, Any]]:
     if len(parts) != 4:
         return None
     prefix, uid, plan, nonce = parts
-    if prefix == 'TGU1':
+    if prefix in ('TGU1', 'TGD1'):
         if not uid.isdigit() or not is_valid_plan(plan) or len(nonce) != 32 or any(c not in '0123456789abcdef' for c in nonce):
             return None
         return {'user_id': int(uid), 'plan_key': plan, 'nonce': nonce, 'quote_reference': nonce}
@@ -272,6 +272,9 @@ async def activate_from_payment(
             return "failed"
         if res.get("already_processed"):
             return "already"
+        if res.get('scheduled'):
+            log.info('ton_payment_scheduled', payment_id=res['payment_id'], external_id=external_id)
+            return 'scheduled'
         await _notify_user(user_id, plan_key)
         log.info("ton_payment_activated", user_id=user_id, plan=plan_key, external_id=external_id)
         return "activated"
@@ -561,7 +564,7 @@ async def _process_one_event(ev: Dict[str, Any]) -> tuple[int, bool]:
         # Legacy ton_done markers include queued payments. Always ask the Engine
         # about paid transfers; neither the cache nor the shared queue proves a
         # payment was committed (the queue's torn-tail issue is a separate fix).
-        if status not in ("activated", "already", "held"):
+        if status not in ("activated", "already", "held", "scheduled"):
             log.warning("ton_checkpoint_blocked", external_id=external_id, status=status)
             return activated, False
         if status == "activated":

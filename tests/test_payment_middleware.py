@@ -120,13 +120,14 @@ async def test_regular_message_is_still_throttled(payment_dispatcher):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('amount', [1332, 1333, 1334])
 @pytest.mark.parametrize('outcome', ['held', 'queued'])
-async def test_upgrade_receipt_is_never_dropped_by_cycle_price_or_quota(payment_dispatcher, amount, outcome):
+@pytest.mark.parametrize('kind', ['upgrade', 'downgrade'])
+async def test_upgrade_receipt_is_never_dropped_by_cycle_price_or_quota(payment_dispatcher, amount, outcome, kind):
     dispatcher, engine, limiter, queue, reply = payment_dispatcher
     engine.complete_payment.return_value = ({'ok': False, 'held': True, 'payment_id': 'held-1'}
                                           if outcome == 'held' else {'ok': False, 'permanent': False})
     reference = 'a' * 32
     await send_message(dispatcher, successful_payment={
-        'currency': 'XTR', 'total_amount': amount, 'invoice_payload': f'upgrade_pro|{reference}|1001',
+        'currency': 'XTR', 'total_amount': amount, 'invoice_payload': f'{kind}_pro|{reference}|1001',
         'telegram_payment_charge_id': 'upgrade-charge', 'provider_payment_charge_id': '',
     })
     forwarded = engine.complete_payment.call_args.kwargs
@@ -136,3 +137,19 @@ async def test_upgrade_receipt_is_never_dropped_by_cycle_price_or_quota(payment_
     limiter.check_rate_limit.assert_not_awaited()
     assert await queue.pending_count() == (1 if outcome == 'queued' else 0)
     if outcome == 'held': assert 'reconciliation' in reply.call_args.args[0].lower()
+
+@pytest.mark.asyncio
+async def test_paid_downgrade_is_reported_as_scheduled_not_activated(payment_dispatcher):
+    dispatcher, engine, limiter, queue, reply = payment_dispatcher
+    engine.complete_payment.return_value = {'ok': True, 'scheduled': True, 'payment_id': 'schedule-1'}
+    await send_message(dispatcher, successful_payment={
+        'currency': 'XTR', 'total_amount': 1335,
+        'invoice_payload': 'downgrade_starter|' + 'a' * 32 + '|1001',
+        'telegram_payment_charge_id': 'downgrade-charge', 'provider_payment_charge_id': '',
+    })
+    assert engine.complete_payment.call_args.kwargs['duration_days'] == 0
+    assert engine.complete_payment.call_args.kwargs['paid_units'] == 1335
+    assert await queue.pending_count() == 0
+    limiter.check_rate_limit.assert_not_awaited()
+    assert 'Prepaid downgrade recorded' in reply.call_args.args[0]
+    assert 'now active' not in reply.call_args.args[0]

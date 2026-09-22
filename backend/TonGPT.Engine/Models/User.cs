@@ -31,6 +31,9 @@ namespace TonGPT.Engine.Models
 
         public DateTime? SubscriptionExpiry { get; set; }
         public long EntitlementVersion { get; set; }
+        public SubscriptionPlan? PendingPlan { get; set; }
+        public DateTime? PendingStartsAt { get; set; }
+        public DateTime? PendingExpiry { get; set; }
 
         public string? ConsentVersion { get; set; }
 

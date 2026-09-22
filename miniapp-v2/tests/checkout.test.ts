@@ -184,3 +184,33 @@ describe('Stars and lifecycle', () => {
     expect(machine.state?.id).toBe(9); expect(deps.quoteStars).not.toHaveBeenCalled();
   });
 });
+
+describe('prepaid downgrades', () => {
+  it.each(['ton', 'stars'] as const)('%s reviews future coverage and confirms scheduling without immediate activation', async rail => {
+    const quote: Ticket = { ...ticket, rail, kind: 'downgrade', plan: 'starter',
+      amount: '10000000000', expected_units: 1335, invoice_url: 'https://t.me/$downgrade',
+      scheduled_start: '2030-01-01T00:00:00Z', scheduled_expiry: '2030-01-31T00:00:00Z' };
+    const { machine, deps, callbacks } = setup({
+      quoteTon: vi.fn().mockResolvedValue(quote), quoteStars: vi.fn().mockResolvedValue(quote),
+      validateQuote: vi.fn().mockResolvedValue({ valid: true }),
+      status: vi.fn().mockResolvedValue({ status: 'scheduled', paymentId: 'prepaid-1',
+        scheduledPlan: 'Starter', scheduledStart: quote.scheduled_start, scheduledExpiry: quote.scheduled_expiry }),
+    });
+    await machine.start('starter', rail);
+    expect(machine.state?.phase).toBe('review');
+    expect(machine.state?.message).toContain('No self-service cancellation or refund');
+    expect(machine.state?.message).toContain(quote.scheduled_start);
+    expect(deps.sendTransaction).not.toHaveBeenCalled(); expect(deps.openInvoice).not.toHaveBeenCalled();
+    await machine.confirmUpgrade();
+    if (rail === 'stars') await machine.check();
+    expect(machine.state?.phase).toBe('scheduled');
+    expect(deps.activated).not.toHaveBeenCalled();
+    if (rail === 'stars') callbacks[0]('cancelled');
+    expect(machine.state?.phase).toBe('scheduled');
+  });
+  it('does not confirm scheduling without a persisted payment ID', async () => {
+    const { machine, deps } = setup({ status: vi.fn().mockResolvedValue({ status: 'scheduled' }) });
+    await machine.start('pro', 'ton');
+    expect(machine.state?.phase).toBe('pending'); expect(deps.activated).not.toHaveBeenCalled();
+  });
+});

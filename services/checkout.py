@@ -89,15 +89,15 @@ def stars_ticket(user_id, plan):
 
 
 def invoice_payload(ticket):
-    prefix = 'upgrade' if ticket.get('kind') == 'upgrade' else 'premium'
+    prefix = ticket['kind'] if ticket.get('kind') in ('upgrade', 'downgrade') else 'premium'
     return f"{prefix}_{ticket['plan']}|{ticket['reference']}|{ticket['user_id']}"
 
 
 def parse_invoice(payload, user_id):
     """Legacy bot invoices stay valid; new miniapp invoices are payer-bound."""
     parts = payload.split('|')
-    plan = parts[0].removeprefix('premium_').removeprefix('upgrade_')
-    if len(parts) == 1 and not payload.startswith('upgrade_'):
+    plan = parts[0].removeprefix('premium_').removeprefix('upgrade_').removeprefix('downgrade_')
+    if len(parts) == 1 and not payload.startswith(('upgrade_', 'downgrade_')):
         return plan, None
     if len(parts) != 3 or not re.fullmatch(r'[0-9a-f]{32}', parts[1]) or parts[2] != str(user_id):
         raise ValueError('Invoice belongs to another user or is malformed')
@@ -112,9 +112,9 @@ async def checkout_status(ticket, message_hash=None):
         'Checkout/status/' + quote(reference, safe=''),
         extra_headers={'X-Checkout-Assertion': engine_assertion(ticket['user_id'], reference)},
     )
-    if not isinstance(result, dict) or result.get('status') not in ('pending', 'activated', 'reconciliation_required'):
+    if not isinstance(result, dict) or result.get('status') not in ('pending', 'activated', 'scheduled', 'reconciliation_required'):
         raise RuntimeError('Engine did not confirm checkout status')
-    if result['status'] in ('activated', 'reconciliation_required') and not result.get('paymentId'):
+    if result['status'] in ('activated', 'scheduled', 'reconciliation_required') and not result.get('paymentId'):
         raise RuntimeError('Engine acknowledgement has no persisted payment')
     result = dict(result)
     # Chain lookup is informational only; it can NEVER cause activation.
@@ -155,14 +155,17 @@ async def prepare_ticket(ticket):
     if result.get('kind') == 'cycle':
         return ticket
     if result.get('error') == 409:
-        raise ValueError('Downgrade scheduling is not available yet. No payment requested.')
-    if result.get('kind') != 'upgrade' or result.get('reference') != reference:
+        raise ValueError('Existing prepaid coverage conflicts with this purchase. Contact support; no payment requested.')
+    if result.get('kind') not in ('upgrade', 'downgrade') or result.get('reference') != reference:
         raise RuntimeError('Could not obtain an authoritative payment quote')
     extra = {k: v for k, v in ticket.items() if k not in ('token', 'reference', 'expires', 'plan', 'rail', 'user_id')}
-    extra.update(kind='upgrade', quote_reference=reference, expected_units=int(result['expectedUnits']),
+    extra.update(kind=result['kind'], quote_reference=reference, expected_units=int(result['expectedUnits']),
                  subscription_expiry=result['expiry'], valid_until=int(result['validUntil']))
+    if result['kind'] == 'downgrade':
+        extra.update(scheduled_start=result['scheduledStart'], scheduled_expiry=result['scheduledExpiry'])
     if ticket['rail'] == 'ton':
-        extra.update(amount=str(result['expectedUnits']), memo=f"TGU1-{ticket['user_id']}-{ticket['plan']}-{reference}")
+        prefix = 'TGD1' if result['kind'] == 'downgrade' else 'TGU1'
+        extra.update(amount=str(result['expectedUnits']), memo=f"{prefix}-{ticket['user_id']}-{ticket['plan']}-{reference}")
     return issue_ticket(ticket['user_id'], ticket['plan'], ticket['rail'], reference, **extra)
 
 
@@ -170,6 +173,6 @@ async def validate_upgrade(user_id, reference):
     from services.engine_client import engine_client
     result = await engine_client._get('Checkout/validate/' + quote(reference, safe=''),
         extra_headers={'X-Checkout-Assertion': engine_assertion(user_id, reference)})
-    if not result or result.get('kind') != 'upgrade':
+    if not result or result.get('kind') not in ('upgrade', 'downgrade'):
         raise ValueError('Quote expired or subscription changed. Request a new quote before paying.')
     return result
